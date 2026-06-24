@@ -1,0 +1,210 @@
+/* i18n.js — UI string table + tiny translator.
+   zh (Traditional Chinese) is the source of truth; en / ja / ko are filled in below.
+   t(key, params) looks up the current language, falling back to zh then the key.
+   Placeholders look like {name}; values may contain HTML (we control the templates). */
+
+const LANGS = [["zh", "繁中"], ["en", "EN"], ["ja", "日本語"], ["ko", "한국어"]];
+
+const I18N = {
+  zh: {
+    // ---- document / chrome ----
+    docTitle: "GD Skill Match — DrumMania 技能配對與選曲推薦",
+    searchPlaceholder: "搜尋玩家名稱…",
+    navReadout: "玩家讀數", navSimilar: "相似玩家", navRivals: "對手推薦", navSongs: "選曲推薦",
+    loading: "載入中…", analyzing: "分析玩家中…",
+    loadFail: "載入失敗：{msg}", noPlayer: "查無此玩家",
+    metaSub: "{version} · {players} 位玩家 · {charts} 譜面",
+    dataUpdated: "資料更新：{date} (UTC+8)",
+    tierTitle: "{tier} 段 ({lo}–{hi})",
+    langLabel: "語言",
+
+    // ---- hero ----
+    gsvProfile: "gsv 個人頁 ↗",
+    skillUnit: "SKILL",
+    rankLine: "第 <b>{rank}</b> / {total} 名",
+    leadLine: "領先 <b>{pct}%</b> 玩家",
+    cutoffLine: "門檻線(第25名) {cut} · {count} 曲",
+    statMaxLevel: "最高難度", statAvgLevel: "平均難度", statAvgAch: "平均達成率", statBracket: "分數段",
+    histTitle: "難度分布（技能帳 50 曲，每 0.5 級一組）",
+    histBarTitle: "Lv {a}–{b}：{n} 曲",
+    benchTitle: "SKILL BENCH · 技能帳",
+    legendWeak: "弱", legendStrong: "強",
+    poolHot: "HOT · 新曲 25 ({n})", poolOther: "OTHER · 舊曲 25 ({n})",
+    signatureTitle: "招牌強項 · 同分數段中你打得明顯更好的譜面",
+    improveTitle: "可補強 · 同分數段玩家在這些留存曲上普遍贏你",
+    secReadout: "玩家讀數",
+    readoutNote: "技能帳指紋：每個墊是一張你最強的譜面，顏色代表你相對<b>同分數段</b>玩家的強弱（藍=偏弱 · 金=偏強）。越級打的高難曲也以同段位玩家為基準評分。",
+    padTipDiff: "{diffFull} · Lv{level} · {pool}",
+    padTipSkill: "skill <b>{skill}</b> · 達成 {ach}",
+    padTipZ: "同段相對 z={z} · 同段 {near} 人 / 全站 {count} 人",
+    padTipTap: "點擊看同級玩家在這首的狀況 →",
+
+    // ---- help bubbles ----
+    zFull: "z-score（標準分數）＝（你在這首的單曲 skill − 同分數段玩家在這首的平均）÷ 標準差。\n＋1.0 ≈ 比同段位約 84% 的人強；0 ≈ 與同段位平均相當；−1.0 ≈ 偏弱（約只贏 16%）。\n只跟「總分接近你的玩家」比，所以你越級挑戰的高難曲不會被高手拉低評價。\n墊子顏色：金＝相對強、藍＝相對弱。",
+    zShort: "z-score：與「同分數段」玩家相比的相對強弱。＋1≈強一個標準差（約贏 84%）、0≈平均、−1≈偏弱。",
+    heroHelp: "SKILL＝技能帳 50 曲（HOT 新曲 25＋OTHER 舊曲 25）單曲 skill 的總和。\n單曲 skill＝譜面難度 × 20 × 達成率。\n門檻線＝該池第 25 名的 skill；新曲要超過它才會擠進技能帳、推高總分。\n領先%＝你的總分贏過多少比例的玩家。\n分數段＝每 500 分一段，用來界定「同級玩家」。",
+    similarHelp: "三個相似度信號皆為 0–1，越高越像，且與總分高低無關：\n• style 風格：共同曲的「相對強弱模式」相似度（同曲 z-score 的 cosine）。\n• taste 口味：選曲重疊度（共同擁有的譜面，熱門曲以 IDF 降權的加權 Jaccard）。\n• latent 潛在：用矩陣分解(SVD)把選曲壓成 32 維後的相似度，已去雜訊。\n共同曲＝兩人技能帳重疊的譜面數；信心＝共同曲越多越可靠。",
+    rivalsHelp: "分類：同級對手(總分相當)、成長目標(略強、可追)、追趕者(略弱、追著你)、憧憬目標(明顯更高)。\n風格／口味＝同「相似玩家」的 style／taste（0–1，越高越像）。\n總分差＝對方總 skill − 你的（＋代表對方較高）。\n信心＝共同曲越多，比較越可靠。",
+    songsHelp: "估 skill＝用同段位玩家的平均達成率，估你打這首可得的單曲 skill（難度 × 20 × 估達成率）。\n門檻＝你 HOT/OTHER 技能帳第 25 名的 skill；估 skill 高於門檻才會進帳。\n提升 ＋N＝估 skill − 門檻（對總分的預期增加）。\n相似玩家比例＝你最相似的鄰居中有多少人也在玩這首（口味發掘的依據）。\n信心低者為截尾資料下的估計，僅供參考。",
+    simTitleStyle: "風格：你們在共同曲的相對強弱模式相似度（同曲 z-score 的 cosine）。0–1，越高越像。",
+    simTitleTaste: "口味：選曲重疊度（共同擁有的譜面，熱門曲以 IDF 降權的加權 Jaccard）。0–1，越高越像。",
+    simTitleLatent: "潛在：用矩陣分解(SVD)壓成 32 維後的選曲風格相似度，已去雜訊。0–1。",
+    confTitle: "信心度：兩人共同曲越多，相似度與對戰比較越可靠（滿格 4 格）。",
+
+    // ---- similar players ----
+    secSimilar: "相似玩家",
+    similarNote: "依「選曲口味 + 演奏強弱模式」找出與 {name} 風格最接近的玩家（與總分高低無關）",
+    emptySimilar: "找不到足夠相似的玩家",
+    lblShared: "共同曲", lblSpGap: "總分差", lblConf: "信心",
+    sharedTitle: "共同強項（你 / 對方 skill）",
+    learnTitle: "對方有、你還沒練的曲",
+
+    // ---- rivals ----
+    secRivals: "對手推薦",
+    rivalsNote: "風格相近、實力可及的玩家 — 適合在 eAmusement 加為 RIVAL 互相追趕",
+    emptyRivals: "找不到合適的對手",
+    rivalPeer: "同級對手", rivalGrowth: "成長目標", rivalChaser: "追趕者", rivalAspirational: "憧憬目標",
+    rivalReason: "風格 {style}・口味 {taste}・共同曲 {shared} 首・總分差 {gap}",
+    theyWinTitle: "對手在這些曲領先你 — 追趕目標",
+    youWinTitle: "你在這些曲領先 — 守住優勢",
+    rivalsFootnote: "提示：GITADORA 的 RIVAL 需在官方 eAmusement 以對方的 GITADORA-ID 加入；點擊玩家可開啟其 gsv 個人頁查看技能帳細節。",
+
+    // ---- songs ----
+    secSongs: "選曲推薦",
+    songsNote: "分數段 {scope}+ · 你的難度區間 中位 Lv{med} / 上限 Lv{max}",
+    tabCombined: "甜蜜點", tabSkillUp: "提升總分", tabDiscovery: "口味發掘",
+    tabHintCombined: "相似玩家愛玩 × 能提升總分",
+    tabHintSkillUp: "估算可超過你 HOT/OTHER 門檻的曲",
+    tabHintDiscovery: "與你最相似玩家普遍在玩、你還沒練的曲",
+    songsEmpty: "此分類暫無推薦（可能你已把高效曲都練起來了）",
+    whyDiscovery: "{nbr}/{total} 位與你最相似的玩家都在玩這首（Lv{level}）{kasegi}",
+    whyKasegiSuffix: "，且是你分數段的熱門賺分曲",
+    whySkillUp: "同級玩家平均達成率估 {estAch}% → 單曲 skill ≈ {estSkill}，高於你 {pool} 門檻 {cutoff}，總分可 +{gain}（信心 {conf}）",
+    whyCombined: "相似玩家愛玩 × 能提升總分 — {nbr}/{total} 位相似玩家在玩，估達成 {estAch}% 可為 {pool} +{gain}",
+    gainTitle: "提升＝估 skill − 門檻，對總分的預期增加",
+    estSkillTitle: "估 skill＝難度×20×估達成率；門檻＝你 {pool} 第 25 名 skill，超過才進帳",
+    estSkillLabel: "估 skill {v}", cutoffLabel: "門檻 {v}",
+    targetPct: "達標需 {pct}%", targetPctTitle: "達到此達成率，單曲 skill 就會超過你的門檻、進入技能帳並計入總分（門檻 ÷ 難度×20）。",
+    fracTitle: "你最相似的 {total} 位鄰居中，有 {n} 位也在玩這首",
+    fracSub: "{n}/{total} 相似玩家",
+    tagPopular: "相似玩家熱門", tagHighGain: "高提升", tagEfficient: "分數段高效",
+    tagEasy: "難度親民", tagChallenge: "進階挑戰", tagConfident: "佐證充足",
+
+    // ---- modal (single-chart, same bracket) ----
+    modalYouHas: "你的成績：<b>skill {skill}</b> · 達成 {ach}",
+    modalYouPct: " · 達成率贏過同段 <b>{pct}%</b> 的持有者",
+    modalYouNone: "你的技能帳中沒有這首 — 下方是同分數段玩家的狀況，可作為挑戰參考",
+    modalNear: "同分數段（±{band} 分）共 <b>{size}</b> 人，其中 <b>{n}</b> 人有打（{rate}%）",
+    modalNearNone: "同分數段沒有其他人把這首放進技能帳",
+    modalStat: "達成：平均 {mean} · 中位 {median} · 範圍 {min}–{max}　/　單曲 skill：平均 {smean} · 中位 {smedian}",
+    modalHistTitle: "同分數段玩家的達成率分布{self}",
+    modalHistSelf: "（金色＝你）",
+    modalHistBarTitle: "{a}%–{b}%：{n} 人",
+    modalPeersTitle: "同分數段玩家在這首的成績（依單曲 skill 由高到低）",
+    modalPeerPlayer: "玩家（總skill）", modalPeerAch: "達成率", modalPeerSkill: "單曲skill",
+    modalFootnote: "點玩家名稱可在本工具改看該玩家；↗ 開 gsv 個人頁。達成率與 skill 皆為來源精確值。",
+    globalHolders: "全站 {n} 人持有",
+    close: "關閉",
+  },
+  en: {
+    docTitle: "GD Skill Match — DrumMania Skill Matching & Song Recommendations",
+    searchPlaceholder: "Search player name…",
+    navReadout: "Player Readout", navSimilar: "Similar Players", navRivals: "Rival Picks", navSongs: "Song Picks",
+    loading: "Loading…", analyzing: "Analyzing player…",
+    loadFail: "Load failed: {msg}", noPlayer: "Player not found",
+    metaSub: "{version} · {players} players · {charts} charts",
+    dataUpdated: "Data updated: {date} (UTC+8)",
+    tierTitle: "Tier {tier} ({lo}–{hi})", langLabel: "Language",
+    gsvProfile: "gsv profile ↗", skillUnit: "SKILL",
+    rankLine: "Rank <b>{rank}</b> / {total}", leadLine: "Ahead of <b>{pct}%</b> of players",
+    cutoffLine: "#25 cutoff {cut} · {count} songs",
+    statMaxLevel: "Max level", statAvgLevel: "Avg level", statAvgAch: "Avg achievement", statBracket: "Skill bracket",
+    histTitle: "Level distribution (skill sheet 50 songs, grouped per 0.5 level)",
+    histBarTitle: "Lv {a}–{b}: {n} songs",
+    benchTitle: "SKILL BENCH · Skill Sheet", legendWeak: "Weak", legendStrong: "Strong",
+    poolHot: "HOT · New 25 ({n})", poolOther: "OTHER · Old 25 ({n})",
+    signatureTitle: "Signature strengths · Charts you clearly play better than others in the same skill bracket",
+    improveTitle: "Room to improve · Charts where players in your skill bracket generally beat you on these holdovers",
+    secReadout: "Player Readout",
+    readoutNote: "Skill-sheet fingerprint: each pad is one of your strongest charts, and the color shows how you compare against players in the <b>same skill bracket</b> (blue = weaker · gold = stronger). Over-levelled high-difficulty charts are also rated against players in the same bracket.",
+    padTipDiff: "{diffFull} · Lv{level} · {pool}",
+    padTipSkill: "skill <b>{skill}</b> · achievement {ach}",
+    padTipZ: "same-bracket relative z={z} · {near} in bracket / {count} site-wide",
+    padTipTap: "Tap to see how same-level players do on this song →",
+    zFull: "z-score (standard score) = (your single-chart skill on this song − the average of same-skill-bracket players on this song) ÷ standard deviation.\n+1.0 ≈ stronger than about 84% of players in your bracket; 0 ≈ on par with the bracket average; −1.0 ≈ weaker (beating only about 16%).\nIt only compares you against players with totals close to yours, so over-levelled high-difficulty charts you take on won't be dragged down by top players.\nPad colors: gold = relatively strong, blue = relatively weak.",
+    zShort: "z-score: relative strength compared with players in the \"same skill bracket\". +1 ≈ one standard deviation stronger (beats about 84%), 0 ≈ average, −1 ≈ weaker.",
+    heroHelp: "SKILL = the sum of single-chart skill across your skill sheet's 50 songs (HOT new 25 + OTHER old 25).\nSingle-chart skill = chart level × 20 × achievement.\nCutoff = the skill of #25 in that pool; a new song must exceed it to enter the skill sheet and raise your total.\nLead % = the share of players your total beats.\nSkill bracket = one bracket per 500 points, used to define \"same-level players\".",
+    similarHelp: "All three similarity signals range 0–1; higher means more alike, and they are independent of total skill:\n• style: similarity of the \"relative strength pattern\" on shared songs (cosine of same-song z-scores).\n• taste: song-selection overlap (charts you both have, as a weighted Jaccard with popular songs down-weighted by IDF).\n• latent: similarity after compressing song selection into 32 dimensions via matrix factorization (SVD), with noise removed.\nShared songs = the number of charts overlapping in both players' skill sheets; confidence = more shared songs is more reliable.",
+    rivalsHelp: "Categories: same-level rivals (comparable total), growth targets (slightly stronger, catchable), chasers (slightly weaker, chasing you), aspirational targets (clearly higher).\nStyle / taste = the style / taste from \"Similar Players\" (0–1, higher is more alike).\nTotal gap = their total skill − yours (+ means they are higher).\nConfidence = more shared songs makes the comparison more reliable.",
+    songsHelp: "Est. skill = using same-level players' average achievement to estimate the single-chart skill you'd get on this song (level × 20 × estimated achievement).\nCutoff = the skill of #25 in your HOT/OTHER skill sheet; an est. skill above the cutoff enters the sheet.\nGain +N = est. skill − cutoff (the expected increase to your total).\nSimilar-player share = how many of your most similar neighbors also play this song (the basis for taste discovery).\nLow-confidence ones are estimates under truncated data and are for reference only.",
+    simTitleStyle: "Style: similarity of your relative strength pattern on shared songs (cosine of same-song z-scores). 0–1, higher is more alike.",
+    simTitleTaste: "Taste: song-selection overlap (charts you both have, as a weighted Jaccard with popular songs down-weighted by IDF). 0–1, higher is more alike.",
+    simTitleLatent: "Latent: song-selection style similarity after compressing into 32 dimensions via matrix factorization (SVD), with noise removed. 0–1.",
+    confTitle: "Confidence: more shared songs makes similarity and head-to-head comparison more reliable (4 bars max).",
+    secSimilar: "Similar Players",
+    similarNote: "Finds players whose style is closest to {name} by \"song taste + performance strength pattern\" (independent of total skill)",
+    emptySimilar: "No sufficiently similar players found",
+    lblShared: "Shared songs", lblSpGap: "Total gap", lblConf: "Confidence",
+    sharedTitle: "Shared strengths (you / their skill)",
+    learnTitle: "Songs they have that you haven't practiced yet",
+    secRivals: "Rival Picks",
+    rivalsNote: "Players with similar style and reachable ability — good to add as a RIVAL on eAmusement to chase each other",
+    emptyRivals: "No suitable rivals found",
+    rivalPeer: "Same-level rival", rivalGrowth: "Growth target", rivalChaser: "Chaser", rivalAspirational: "Aspirational target",
+    rivalReason: "Style {style} · Taste {taste} · {shared} shared songs · Total gap {gap}",
+    theyWinTitle: "Songs where your rival leads you — catch-up targets",
+    youWinTitle: "Songs where you lead — hold your edge",
+    rivalsFootnote: "Tip: A GITADORA RIVAL must be added via the official eAmusement using the other player's GITADORA-ID; click a player to open their gsv profile and view skill-sheet details.",
+    secSongs: "Song Picks",
+    songsNote: "Skill bracket {scope}+ · Your level range: median Lv{med} / cap Lv{max}",
+    tabCombined: "Sweet spot", tabSkillUp: "Boost total", tabDiscovery: "Taste discovery",
+    tabHintCombined: "Loved by similar players × boosts your total",
+    tabHintSkillUp: "Songs estimated to clear your HOT/OTHER cutoff",
+    tabHintDiscovery: "Songs your most similar players commonly play that you haven't practiced yet",
+    songsEmpty: "No recommendations in this category (you may have already practiced all the efficient songs)",
+    whyDiscovery: "{nbr}/{total} of your most similar players play this song (Lv{level}){kasegi}",
+    whyKasegiSuffix: ", and it's a popular skill-farming song in your skill bracket",
+    whySkillUp: "Same-level players' average achievement estimated at {estAch}% → single-chart skill ≈ {estSkill}, above your {pool} cutoff {cutoff}, total could +{gain} (confidence {conf})",
+    whyCombined: "Loved by similar players × boosts your total — {nbr}/{total} similar players play it; est. achievement {estAch}% could give {pool} +{gain}",
+    gainTitle: "Gain = est. skill − cutoff, the expected increase to your total",
+    estSkillTitle: "Est. skill = level × 20 × estimated achievement; cutoff = the skill of #25 in your {pool}, exceed it to enter the sheet",
+    estSkillLabel: "Est. skill {v}", cutoffLabel: "Cutoff {v}",
+    targetPct: "Need {pct}%", targetPctTitle: "Reach this achievement and the chart's skill clears your cutoff, entering your skill sheet and counting toward your total (cutoff ÷ level×20).",
+    fracTitle: "Of your {total} most similar neighbors, {n} also play this song",
+    fracSub: "{n}/{total} similar players",
+    tagPopular: "Popular with similar players", tagHighGain: "High gain", tagEfficient: "Bracket-efficient",
+    tagEasy: "Approachable level", tagChallenge: "Advanced challenge", tagConfident: "Well-supported",
+    modalYouHas: "Your score: <b>skill {skill}</b> · achievement {ach}",
+    modalYouPct: " · achievement beats <b>{pct}%</b> of same-bracket players who have it",
+    modalYouNone: "This song isn't in your skill sheet — below is how same-skill-bracket players do, as a challenge reference",
+    modalNear: "Same skill bracket (±{band} pts): <b>{size}</b> players, of whom <b>{n}</b> have played it ({rate}%)",
+    modalNearNone: "No one else in the same skill bracket has put this song in their skill sheet",
+    modalStat: "Achievement: avg {mean} · median {median} · range {min}–{max}　/　single-chart skill: avg {smean} · median {smedian}",
+    modalHistTitle: "Achievement distribution of same-skill-bracket players{self}",
+    modalHistSelf: " (gold = you)",
+    modalHistBarTitle: "{a}%–{b}%: {n} players",
+    modalPeersTitle: "Same-skill-bracket players' scores on this song (by single-chart skill, high to low)",
+    modalPeerPlayer: "Player (total skill)", modalPeerAch: "Achievement", modalPeerSkill: "Single-chart skill",
+    modalFootnote: "Click a player name to switch to that player in this tool; ↗ opens the gsv profile. Achievement and skill are exact source values.",
+    globalHolders: "{n} players site-wide have it", close: "Close",
+  },
+  ja: {"docTitle":"GD Skill Match — DrumMania スキルマッチングと選曲おすすめ","searchPlaceholder":"プレイヤー名を検索…","navReadout":"プレイヤー読み","navSimilar":"類似プレイヤー","navRivals":"ライバルおすすめ","navSongs":"選曲おすすめ","loading":"読み込み中…","analyzing":"プレイヤーを分析中…","loadFail":"読み込み失敗：{msg}","noPlayer":"プレイヤーが見つかりません","metaSub":"{version} · {players} 人のプレイヤー · {charts} 譜面","dataUpdated":"データ更新：{date} (UTC+8)","tierTitle":"{tier} 帯 ({lo}–{hi})","langLabel":"言語","gsvProfile":"gsv 個人ページ ↗","skillUnit":"SKILL","rankLine":"第 <b>{rank}</b> / {total} 位","leadLine":"上位 <b>{pct}%</b> のプレイヤー","cutoffLine":"ボーダー(25位) {cut} · {count} 曲","statMaxLevel":"最高難易度","statAvgLevel":"平均難易度","statAvgAch":"平均達成率","statBracket":"スキル帯","histTitle":"難易度分布（スキル帳 50 曲、0.5 レベルごと）","histBarTitle":"Lv {a}–{b}：{n} 曲","benchTitle":"SKILL BENCH · スキル帳","legendWeak":"弱","legendStrong":"強","poolHot":"HOT · 新曲 25 ({n})","poolOther":"OTHER · 旧曲 25 ({n})","signatureTitle":"得意譜面 · 同スキル帯の中であなたが明らかに上手い譜面","improveTitle":"苦手譜面（伸びしろ）· 同スキル帯のプレイヤーがこれらの定番曲であなたに勝っている","secReadout":"プレイヤー読み","readoutNote":"スキル帳の指紋：各パッドはあなたの最強譜面の1枚で、色は<b>同スキル帯</b>のプレイヤーに対する強弱を表します（青=やや弱め · 金=やや強め）。地力以上の挑戦をした高難易度曲も同スキル帯プレイヤーを基準に評価します。","padTipDiff":"{diffFull} · Lv{level} · {pool}","padTipSkill":"skill <b>{skill}</b> · 達成 {ach}","padTipZ":"同帯相対 z={z} · 同帯 {near} 人 / 全体 {count} 人","padTipTap":"クリックで同レベルプレイヤーのこの曲の状況を表示 →","zFull":"z-score（標準スコア）＝（この曲でのあなたの単曲 skill − 同スキル帯プレイヤーのこの曲の平均）÷ 標準偏差。\n＋1.0 ≈ 同スキル帯の約 84% の人より強い；0 ≈ 同スキル帯の平均並み；−1.0 ≈ やや弱め（約 16% にしか勝てない）。\n「総合スコアが近いプレイヤー」とのみ比較するので、地力以上に挑戦した高難易度曲が上級者に評価を下げられることはありません。\nパッドの色：金＝相対的に強い、青＝相対的に弱い。","zShort":"z-score：「同スキル帯」プレイヤーと比べた相対的な強弱。＋1≈標準偏差1つ分強い（約 84% に勝つ）、0≈平均、−1≈やや弱め。","heroHelp":"SKILL＝スキル帳 50 曲（HOT 新曲 25＋OTHER 旧曲 25）の単曲 skill の合計。\n単曲 skill＝譜面難易度 × 20 × 達成率。\nボーダー＝そのプールの第 25 位の skill；新曲はこれを超えないとスキル帳に入らず、総合スコアを押し上げません。\n上位%＝あなたの総合スコアがどれだけの割合のプレイヤーに勝っているか。\nスキル帯＝500 点ごとに1区切りで、「同レベルのプレイヤー」を定義するのに使います。","similarHelp":"3つの類似度シグナルはすべて 0–1 で、高いほど似ており、総合スコアの高低とは無関係です：\n• style 風格：共通曲での「相対的な強弱パターン」の類似度（同曲 z-score の cosine）。\n• taste 好み：選曲の重なり度（共通して所持する譜面、人気曲は IDF で重みを下げた加重 Jaccard）。\n• latent 潜在：行列分解(SVD)で選曲を 32 次元に圧縮した後の類似度、ノイズ除去済み。\n共通曲＝二人のスキル帳が重なる譜面数；信頼度＝共通曲が多いほど信頼できます。","rivalsHelp":"分類：同級ライバル(総合スコアが同等)、成長目標(やや上、追える)、追走者(やや下、あなたを追っている)、憧れの目標(明らかに上)。\n風格／好み＝「類似プレイヤー」と同じ style／taste（0–1、高いほど似ている）。\n総合スコア差＝相手の総合 skill − あなたの（＋は相手が高いことを表す）。\n信頼度＝共通曲が多いほど比較が信頼できます。","songsHelp":"推定 skill＝同スキル帯プレイヤーの平均達成率を使い、あなたがこの曲で得られる単曲 skill を推定（難易度 × 20 × 推定達成率）。\nボーダー＝あなたの HOT/OTHER スキル帳の第 25 位の skill；推定 skill がボーダーを超えて初めてスキル帳に入ります。\n伸び ＋N＝推定 skill − ボーダー（総合スコアへの予想増加分）。\n類似プレイヤー比率＝あなたに最も近い隣人のうち何人がこの曲も遊んでいるか（好み発掘の根拠）。\n信頼度が低いものは打ち切りデータ下での推定なので、参考程度に。","simTitleStyle":"風格：共通曲での相対的な強弱パターンの類似度（同曲 z-score の cosine）。0–1、高いほど似ている。","simTitleTaste":"好み：選曲の重なり度（共通して所持する譜面、人気曲は IDF で重みを下げた加重 Jaccard）。0–1、高いほど似ている。","simTitleLatent":"潜在：行列分解(SVD)で 32 次元に圧縮した後の選曲風格の類似度、ノイズ除去済み。0–1。","confTitle":"信頼度：二人の共通曲が多いほど、類似度や対戦比較が信頼できます（最大 4 ゲージ）。","secSimilar":"類似プレイヤー","similarNote":"「選曲の好み + 演奏の強弱パターン」をもとに {name} と最も近い風格のプレイヤーを探します（総合スコアの高低とは無関係）","emptySimilar":"十分に似たプレイヤーが見つかりません","lblShared":"共通曲","lblSpGap":"総合スコア差","lblConf":"信頼度","sharedTitle":"共通の得意曲（あなた / 相手 skill）","learnTitle":"相手は所持、あなたが未練習の曲","secRivals":"ライバルおすすめ","rivalsNote":"風格が近く、実力が届くプレイヤー — eAmusement で RIVAL に追加して互いに追いかけ合うのに最適","emptyRivals":"適したライバルが見つかりません","rivalPeer":"同級ライバル","rivalGrowth":"成長目標","rivalChaser":"追走者","rivalAspirational":"憧れの目標","rivalReason":"風格 {style}・好み {taste}・共通曲 {shared} 曲・総合スコア差 {gap}","theyWinTitle":"相手がこれらの曲であなたをリード — 追いかける目標","youWinTitle":"あなたがこれらの曲でリード — 優位を守ろう","rivalsFootnote":"ヒント：GITADORA の RIVAL は公式 eAmusement で相手の GITADORA-ID を使って追加する必要があります；プレイヤーをクリックすると gsv 個人ページが開きスキル帳の詳細を確認できます。","secSongs":"選曲おすすめ","songsNote":"スキル帯 {scope}+ · あなたの難易度区間 中央値 Lv{med} / 上限 Lv{max}","tabCombined":"スイートスポット","tabSkillUp":"総合スコアアップ","tabDiscovery":"好み発掘","tabHintCombined":"類似プレイヤーが好んで遊ぶ × 総合スコアを上げられる","tabHintSkillUp":"あなたの HOT/OTHER ボーダーを超えると推定される曲","tabHintDiscovery":"あなたに最も似たプレイヤーがよく遊んでいて、あなたが未練習の曲","songsEmpty":"このカテゴリーにおすすめはありません（高効率な曲をすべて練習済みかもしれません）","whyDiscovery":"{nbr}/{total} 人のあなたに最も似たプレイヤーがこの曲を遊んでいます（Lv{level}）{kasegi}","whyKasegiSuffix":"、しかもあなたのスキル帯で人気の稼ぎ曲です","whySkillUp":"同レベルプレイヤーの平均達成率は推定 {estAch}% → 単曲 skill ≈ {estSkill}、あなたの {pool} ボーダー {cutoff} を上回り、総合スコアは +{gain} 可能（信頼度 {conf}）","whyCombined":"類似プレイヤーが好んで遊ぶ × 総合スコアを上げられる — {nbr}/{total} 人の類似プレイヤーが遊んでおり、推定達成 {estAch}% で {pool} を +{gain}","gainTitle":"伸び＝推定 skill − ボーダー、総合スコアへの予想増加分","estSkillTitle":"推定 skill＝難易度×20×推定達成率；ボーダー＝あなたの {pool} 第 25 位の skill、超えて初めてスキル帳に入る","estSkillLabel":"推定 skill {v}","cutoffLabel":"ボーダー {v}","targetPct":"目標 {pct}%","targetPctTitle":"この達成率に届けば単曲 skill がボーダーを超え、スキル帳に入って総合スコアに加算されます（ボーダー ÷ 難易度×20）。","fracTitle":"あなたに最も似た {total} 人の隣人のうち、{n} 人もこの曲を遊んでいます","fracSub":"{n}/{total} 類似プレイヤー","tagPopular":"類似プレイヤーに人気","tagHighGain":"高い伸び","tagEfficient":"スキル帯で高効率","tagEasy":"取り組みやすい難易度","tagChallenge":"上級チャレンジ","tagConfident":"裏付け十分","modalYouHas":"あなたの成績：<b>skill {skill}</b> · 達成 {ach}","modalYouPct":" · 達成率は同帯の <b>{pct}%</b> の登録プレイヤーに勝っています","modalYouNone":"あなたのスキル帳にこの曲はありません — 下は同スキル帯プレイヤーの状況で、挑戦の参考になります","modalNear":"同スキル帯（±{band} 点）は計 <b>{size}</b> 人、うち <b>{n}</b> 人がプレイ済み（{rate}%）","modalNearNone":"同スキル帯でこの曲をスキル帳に入れている他のプレイヤーはいません","modalStat":"達成：平均 {mean} · 中央値 {median} · 範囲 {min}–{max}　/　単曲 skill：平均 {smean} · 中央値 {smedian}","modalHistTitle":"同スキル帯プレイヤーの達成率分布{self}","modalHistSelf":"（金色＝あなた）","modalHistBarTitle":"{a}%–{b}%：{n} 人","modalPeersTitle":"同スキル帯プレイヤーのこの曲の成績（単曲 skill の高い順）","modalPeerPlayer":"プレイヤー（総 skill）","modalPeerAch":"達成率","modalPeerSkill":"単曲 skill","modalFootnote":"プレイヤー名をクリックするとこのツールでそのプレイヤーに切り替えられます；↗ で gsv 個人ページを開きます。達成率と skill はいずれもソースの正確な値です。","globalHolders":"全体 {n} 人が所持","close":"閉じる"},
+  ko: {"docTitle":"GD Skill Match — DrumMania 스킬 매칭 및 선곡 추천","searchPlaceholder":"플레이어 이름 검색…","navReadout":"플레이어 분석","navSimilar":"유사 플레이어","navRivals":"라이벌 추천","navSongs":"선곡 추천","loading":"로딩 중…","analyzing":"플레이어 분석 중…","loadFail":"로딩 실패: {msg}","noPlayer":"플레이어를 찾을 수 없음","metaSub":"{version} · 플레이어 {players}명 · 채보 {charts}개","dataUpdated":"데이터 갱신: {date} (UTC+8)","tierTitle":"{tier} 구간 ({lo}–{hi})","langLabel":"언어","gsvProfile":"gsv 개인 페이지 ↗","skillUnit":"SKILL","rankLine":"<b>{rank}</b> / {total}위","leadLine":"플레이어 <b>{pct}%</b>보다 앞섬","cutoffLine":"커트라인(25위) {cut} · {count}곡","statMaxLevel":"최고 난이도","statAvgLevel":"평균 난이도","statAvgAch":"평균 달성률","statBracket":"스킬 구간","histTitle":"난이도 분포 (스킬표 50곡, 0.5레벨 단위)","histBarTitle":"Lv {a}–{b}: {n}곡","benchTitle":"SKILL BENCH · 스킬표","legendWeak":"약","legendStrong":"강","poolHot":"HOT · 신곡 25 ({n})","poolOther":"OTHER · 구곡 25 ({n})","signatureTitle":"특기 채보 · 같은 스킬 구간에서 당신이 확연히 잘 치는 채보","improveTitle":"보강 필요 · 같은 스킬 구간 플레이어가 이 잔류곡들에서 대체로 당신을 이기는 채보","secReadout":"플레이어 분석","readoutNote":"스킬표 지문: 각 패드는 당신의 가장 강한 채보 하나로, 색상은 <b>같은 스킬 구간</b> 플레이어 대비 강약을 나타냅니다 (파랑=약함 · 금색=강함). 오버레벨 도전한 고난도 곡도 같은 구간 플레이어를 기준으로 평가됩니다.","padTipDiff":"{diffFull} · Lv{level} · {pool}","padTipSkill":"skill <b>{skill}</b> · 달성 {ach}","padTipZ":"같은 구간 상대 z={z} · 같은 구간 {near}명 / 전체 {count}명","padTipTap":"같은 레벨 플레이어의 이 곡 현황 보기 →","zFull":"z-score(표준 점수) ＝ (이 곡에서 당신의 단일 곡 skill − 같은 스킬 구간 플레이어의 이 곡 평균) ÷ 표준편차.\n＋1.0 ≈ 같은 구간의 약 84%보다 강함; 0 ≈ 같은 구간 평균 수준; −1.0 ≈ 약한 편 (약 16%만 이김).\n「총점이 당신과 비슷한 플레이어」하고만 비교하므로, 오버레벨 도전한 고난도 곡이 고수에게 평가를 깎이지 않습니다.\n패드 색상: 금색＝상대적으로 강함, 파랑＝상대적으로 약함.","zShort":"z-score: 「같은 스킬 구간」 플레이어 대비 상대적 강약. ＋1≈한 표준편차 강함 (약 84% 이김), 0≈평균, −1≈약한 편.","heroHelp":"SKILL＝스킬표 50곡 (HOT 신곡 25＋OTHER 구곡 25) 단일 곡 skill의 합.\n단일 곡 skill＝채보 난이도 × 20 × 달성률.\n커트라인＝해당 풀 25위의 skill; 신곡은 이를 넘어야 스킬표에 들어가 총점을 올립니다.\n앞섬%＝당신의 총점이 몇 %의 플레이어를 이기는지.\n스킬 구간＝500점마다 한 구간으로, 「같은 레벨 플레이어」를 정의하는 데 쓰입니다.","similarHelp":"세 가지 유사도 신호는 모두 0–1이며, 높을수록 비슷하고 총점 고저와 무관합니다:\n• style 스타일: 공통 곡의 「상대적 강약 패턴」 유사도 (같은 곡 z-score의 cosine).\n• taste 취향: 선곡 중복도 (공통 보유 채보, 인기곡은 IDF로 가중치를 낮춘 가중 Jaccard).\n• latent 잠재: 행렬 분해(SVD)로 선곡을 32차원으로 압축한 뒤의 유사도, 노이즈 제거됨.\n공통 곡＝두 사람 스킬표가 겹치는 채보 수; 신뢰도＝공통 곡이 많을수록 신뢰할 만함.","rivalsHelp":"분류: 동급 라이벌(총점 비슷), 성장 목표(약간 강함, 따라잡을 만함), 추격자(약간 약함, 당신을 쫓음), 동경 목표(확연히 높음).\n스타일／취향＝「유사 플레이어」와 동일한 style／taste (0–1, 높을수록 비슷).\n총점 차＝상대 총 skill − 당신의 것 (＋는 상대가 높음을 의미).\n신뢰도＝공통 곡이 많을수록 비교가 신뢰할 만함.","songsHelp":"예상 skill＝같은 구간 플레이어의 평균 달성률로, 당신이 이 곡을 쳤을 때 얻을 단일 곡 skill을 추정 (난이도 × 20 × 예상 달성률).\n커트라인＝당신 HOT/OTHER 스킬표 25위의 skill; 예상 skill이 커트라인보다 높아야 반영됩니다.\n향상 ＋N＝예상 skill − 커트라인 (총점에 대한 예상 증가분).\n유사 플레이어 비율＝당신과 가장 유사한 이웃 중 몇 명이 이 곡을 플레이하는지 (취향 발굴의 근거).\n신뢰도가 낮은 것은 절단된 데이터 하의 추정치로, 참고용입니다.","simTitleStyle":"스타일: 공통 곡에서 두 사람의 상대적 강약 패턴 유사도 (같은 곡 z-score의 cosine). 0–1, 높을수록 비슷.","simTitleTaste":"취향: 선곡 중복도 (공통 보유 채보, 인기곡은 IDF로 가중치를 낮춘 가중 Jaccard). 0–1, 높을수록 비슷.","simTitleLatent":"잠재: 행렬 분해(SVD)로 32차원으로 압축한 뒤의 선곡 스타일 유사도, 노이즈 제거됨. 0–1.","confTitle":"신뢰도: 두 사람의 공통 곡이 많을수록 유사도와 대전 비교가 신뢰할 만함 (최대 4칸).","secSimilar":"유사 플레이어","similarNote":"「선곡 취향 + 연주 강약 패턴」으로 {name}과(와) 스타일이 가장 가까운 플레이어를 찾습니다 (총점 고저와 무관)","emptySimilar":"충분히 유사한 플레이어를 찾을 수 없음","lblShared":"공통 곡","lblSpGap":"총점 차","lblConf":"신뢰도","sharedTitle":"공통 특기 (당신 / 상대 skill)","learnTitle":"상대는 있지만 당신은 아직 연습 안 한 곡","secRivals":"라이벌 추천","rivalsNote":"스타일이 비슷하고 실력이 닿는 플레이어 — eAmusement에서 RIVAL로 추가해 서로 쫓기에 적합","emptyRivals":"적합한 라이벌을 찾을 수 없음","rivalPeer":"동급 라이벌","rivalGrowth":"성장 목표","rivalChaser":"추격자","rivalAspirational":"동경 목표","rivalReason":"스타일 {style}・취향 {taste}・공통 곡 {shared}곡・총점 차 {gap}","theyWinTitle":"라이벌이 이 곡들에서 앞섬 — 추격 목표","youWinTitle":"당신이 이 곡들에서 앞섬 — 우위 지키기","rivalsFootnote":"팁: GITADORA의 RIVAL은 공식 eAmusement에서 상대의 GITADORA-ID로 추가해야 합니다; 플레이어를 클릭하면 그의 gsv 개인 페이지를 열어 스킬표 상세를 볼 수 있습니다.","secSongs":"선곡 추천","songsNote":"스킬 구간 {scope}+ · 당신의 난이도 범위 중앙값 Lv{med} / 상한 Lv{max}","tabCombined":"스위트 스폿","tabSkillUp":"총점 향상","tabDiscovery":"취향 발굴","tabHintCombined":"유사 플레이어 선호 × 총점 향상 가능","tabHintSkillUp":"당신 HOT/OTHER 커트라인을 넘을 것으로 추정되는 곡","tabHintDiscovery":"당신과 가장 유사한 플레이어가 대체로 플레이하지만 당신은 아직 연습 안 한 곡","songsEmpty":"이 분류에는 추천이 없습니다 (고효율 곡을 이미 다 연습했을 수도 있음)","whyDiscovery":"당신과 가장 유사한 플레이어 중 {nbr}/{total}명이 이 곡을 플레이합니다 (Lv{level}){kasegi}","whyKasegiSuffix":", 게다가 당신 스킬 구간의 인기 점수 벌이 곡","whySkillUp":"같은 레벨 플레이어 평균 달성률 추정 {estAch}% → 단일 곡 skill ≈ {estSkill}, 당신 {pool} 커트라인 {cutoff}보다 높음, 총점 +{gain} 가능 (신뢰도 {conf})","whyCombined":"유사 플레이어 선호 × 총점 향상 가능 — 유사 플레이어 {nbr}/{total}명이 플레이, 달성 {estAch}% 추정 시 {pool} +{gain} 가능","gainTitle":"향상＝예상 skill − 커트라인, 총점에 대한 예상 증가분","estSkillTitle":"예상 skill＝난이도×20×예상 달성률; 커트라인＝당신 {pool} 25위 skill, 넘어야 반영됨","estSkillLabel":"예상 skill {v}","cutoffLabel":"커트라인 {v}","targetPct":"목표 {pct}%","targetPctTitle":"이 달성률에 도달하면 단일 곡 skill이 커트라인을 넘어 스킬표에 들어가 총점에 반영됩니다 (커트라인 ÷ 난이도×20).","fracTitle":"당신과 가장 유사한 이웃 {total}명 중 {n}명이 이 곡도 플레이합니다","fracSub":"{n}/{total} 유사 플레이어","tagPopular":"유사 플레이어 인기","tagHighGain":"높은 향상","tagEfficient":"스킬 구간 고효율","tagEasy":"난이도 친화적","tagChallenge":"심화 도전","tagConfident":"근거 충분","modalYouHas":"당신의 성적: <b>skill {skill}</b> · 달성 {ach}","modalYouPct":" · 달성률이 같은 구간 보유 플레이어 <b>{pct}%</b>를 이김","modalYouNone":"당신의 스킬표에는 이 곡이 없습니다 — 아래는 같은 스킬 구간 플레이어의 현황으로, 도전 참고로 삼을 수 있습니다","modalNear":"같은 스킬 구간(±{band}점) 총 <b>{size}</b>명 중 <b>{n}</b>명이 플레이함 ({rate}%)","modalNearNone":"같은 스킬 구간에서 이 곡을 스킬표에 넣은 다른 사람이 없음","modalStat":"달성: 평균 {mean} · 중앙값 {median} · 범위 {min}–{max}　/　단일 곡 skill: 평균 {smean} · 중앙값 {smedian}","modalHistTitle":"같은 스킬 구간 플레이어의 달성률 분포{self}","modalHistSelf":"(금색＝당신)","modalHistBarTitle":"{a}%–{b}%: {n}명","modalPeersTitle":"같은 스킬 구간 플레이어의 이 곡 성적 (단일 곡 skill 높은 순)","modalPeerPlayer":"플레이어 (총skill)","modalPeerAch":"달성률","modalPeerSkill":"단일곡skill","modalFootnote":"플레이어 이름을 클릭하면 이 도구에서 해당 플레이어로 전환할 수 있습니다; ↗는 gsv 개인 페이지를 엽니다. 달성률과 skill은 모두 출처의 정확한 값입니다.","globalHolders":"전체 {n}명 보유","close":"닫기"},
+};
+
+let LANG = (typeof localStorage !== "undefined" && localStorage.getItem("gd_lang")) || "zh";
+if (!I18N[LANG]) LANG = "zh";
+
+function t(key, params) {
+  let s = (I18N[LANG] && I18N[LANG][key]);
+  if (s == null) s = I18N.zh[key];
+  if (s == null) return key;
+  if (params) for (const k in params) s = s.split("{" + k + "}").join(String(params[k]));
+  return s;
+}
+function setLang(l) {
+  if (!I18N[l]) return;
+  LANG = l;
+  try { localStorage.setItem("gd_lang", l); } catch (e) {}
+}
+function getLang() { return LANG; }

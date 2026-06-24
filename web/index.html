@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GD Skill Match — DrumMania</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%230b0f1a'/><rect x='3' y='3' width='4' height='4' rx='1' fill='%23ffb02e'/><rect x='9' y='9' width='4' height='4' rx='1' fill='%2334dcc9'/></svg>" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand" id="brand">
+      <span class="pads"><i></i><i></i><i></i><i></i></span>
+      <div>
+        <h1>GD<b>·</b>SKILL<b>·</b>MATCH</h1>
+        <div class="sub" id="metaSub">DRUMMANIA SKILL CONSOLE</div>
+        <div class="datadate" id="dataDate"></div>
+      </div>
+    </div>
+    <div class="langsel" id="langsel"></div>
+    <div class="search-wrap">
+      <span class="mag">⌕</span>
+      <input id="search" type="text" placeholder="…" autocomplete="off" />
+      <div class="results" id="results"></div>
+    </div>
+  </header>
+
+  <nav class="subnav">
+    <a href="#hero" data-i18n="navReadout">玩家讀數</a>
+    <a href="#similar" data-i18n="navSimilar">相似玩家</a>
+    <a href="#rivals" data-i18n="navRivals">對手推薦</a>
+    <a href="#songs" data-i18n="navSongs">選曲推薦</a>
+  </nav>
+
+  <main class="wrap" id="app">
+    <div class="loading"><span class="spin"></span></div>
+  </main>
+
+  <script src="/i18n.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

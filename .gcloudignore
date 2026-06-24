@@ -1,0 +1,14 @@
+# Upload filter for `gcloud run deploy --source .` (Cloud Run image build).
+.git
+.gitignore
+.gitattributes
+data/
+docs/
+updater/
+*.md
+*.png
+__pycache__/
+**/__pycache__/
+.playwright-mcp/
+firebase.json
+.firebaserc

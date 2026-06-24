@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.playwright-mcp/
+/*.png
+# scraped + derived data is fetched on first run (run.ps1 / run.sh); not redistributed
+data/
+.DS_Store

@@ -1,0 +1,13 @@
+.git
+.gitignore
+.gitattributes
+.gcloudignore
+data/
+docs/
+*.md
+*.png
+__pycache__/
+**/__pycache__/
+.playwright-mcp/
+firebase.json
+.firebaserc
