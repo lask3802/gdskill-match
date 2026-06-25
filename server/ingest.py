@@ -24,6 +24,7 @@ Hard rules honoured here:
 import hashlib
 import json
 import os
+import re
 
 from server import userstore
 
@@ -37,6 +38,11 @@ MAX_ROWS = 5000
 # Keys that must never appear anywhere in an upload (case-insensitive substring).
 FORBIDDEN_KEY_SUBSTRINGS = ("cookie", "html", "card")
 
+# Card-number-shaped string VALUES are rejected too (defence in depth): the
+# e-amusement カードナンバー is a 16-char uppercase alphanumeric run (e.g.
+# "HX2AKJCDDZA6YZ1M"). The 10-char ギタドラ ID and short sids never match {16,}.
+_CARDLIKE = re.compile(r"[A-Z0-9]{16,}")
+
 # Skillpoint tolerance for accepting a name match as the same person.
 SP_TOLERANCE = 75.0
 
@@ -47,7 +53,9 @@ ROOT = os.path.dirname(HERE)
 # --- validation -------------------------------------------------------------
 
 def _scan_forbidden(obj, errors, path="payload"):
-    """Recursively flag any forbidden key (cookie/html/card) anywhere in the tree."""
+    """Recursively flag forbidden KEYS (cookie/html/card) and card-number-shaped
+    string VALUES anywhere in the tree (a card number hidden under a benign key
+    must not slip through into the immutable raw upload)."""
     if isinstance(obj, dict):
         for key, val in obj.items():
             kl = str(key).lower()
@@ -59,6 +67,9 @@ def _scan_forbidden(obj, errors, path="payload"):
     elif isinstance(obj, list):
         for i, val in enumerate(obj):
             _scan_forbidden(val, errors, f"{path}[{i}]")
+    elif isinstance(obj, str):
+        if _CARDLIKE.search(obj):
+            errors.append(f"forbidden card-number-like value at {path}")
 
 
 def _is_number(x):

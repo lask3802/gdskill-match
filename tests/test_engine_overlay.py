@@ -200,3 +200,18 @@ def test_similar_not_zeroed_by_dense_overlay(tmp_engine_with_overlay):
 def test_private_overlay_hidden_from_non_owner(tmp_engine_with_overlay):
     e, i, _ = tmp_engine_with_overlay
     assert e.get_overlay(i, as_owner=False) is None
+
+
+def test_invalidate_overlay_picks_up_publish_flip(tmp_engine_with_overlay):
+    # A /api/publish flip changes userdata/latest; invalidate_overlay must drop
+    # the cached (private) entry so the next read reflects the new public state
+    # without waiting for the TTL or a process restart (review fix, spec §6/§9).
+    e, i, _ = tmp_engine_with_overlay
+    import server.userstore as us
+    assert e.get_overlay(i, as_owner=False) is None        # cached: private
+    latest = us.get_latest(VERSION, 100)
+    latest["visibility"] = "public"
+    us.set_latest(VERSION, 100, latest)
+    assert e.get_overlay(i, as_owner=False) is None        # still cached (stale)
+    e.invalidate_overlay(100)
+    assert e.get_overlay(i, as_owner=False) is not None     # reloaded: public

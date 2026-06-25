@@ -40,6 +40,21 @@ def test_validate_rejects_nested_sensitive_keys():
     assert any("cookie" in e.lower() for e in ingest.validate(p))
 
 
+def test_validate_rejects_cardlike_value_under_benign_key():
+    # a card number hidden under an innocuous key must still be rejected
+    p = base_payload()
+    p["profile"]["note"] = "HX2AKJCDDZA6YZ1M"   # 16-char uppercase alnum = card-shaped
+    assert any("card" in e.lower() for e in ingest.validate(p))
+
+
+def test_validate_allows_gitadora_id_and_normal_values():
+    # the 10-char ギタドラ ID and ordinary fields must NOT be flagged as card-like
+    p = base_payload()
+    p["profile"]["gitadoraId"] = "HG12B7108F"
+    p["profile"]["allSongSkill"] = 24020.46
+    assert ingest.validate(p) == []
+
+
 def test_validate_size_and_count_limits():
     p = base_payload()
     p["charts"] = p["charts"] * 6000

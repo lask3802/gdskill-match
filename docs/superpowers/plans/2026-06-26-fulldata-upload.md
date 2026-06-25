@@ -470,4 +470,6 @@ test('parseDetail extracts exact achievement', () => {
 
 **Type consistency:** `obs_kind` codes (0/1/2/3), `Overlay` array names, `RANK_BANDS`/`obs_from_rank` shapes, and the payload schema keys are used identically across Tasks 1,3,4,5,8. `get_overlay(i, as_owner=...)` consumed by Task 6 matches Task 5's definition.
 
-**Phasing:** MVP = Tasks 1–9. Deferred: CORS direct POST (Task 6 sets headers but UI uses same-origin fallback), latent-SVD projection fix, `official_play_stats`.
+**Phasing:** MVP = Tasks 1–9. Deferred: CORS direct POST (Task 6 sets headers but UI uses same-origin fallback), latent-SVD projection fix, `official_play_stats`, and **cross-player consumption of public overlays** (today similar/rivals inject only the *requesting* player's own overlay; a published dense uploader is not yet pulled into other players' peer comparisons — Phase 2; private never leaks, so this is a missing positive capability, not a safety issue).
+
+**Post-implementation review fixes applied (adversarial review):** (1) overlay z-scores now propagate observation uncertainty per spec §6.1 — denominator `sqrt(bracket_std² + skill_sd²)` in both `_apply_overlay_profile.wz_ov` and `_signals_overlay`; (2) overlay cache now has a TTL + `Engine.invalidate_overlay(gsvPlayerId)` called from the upload/publish handlers so uploads & publish-flips take effect immediately; (3) `ingest._scan_forbidden` now also rejects card-number-shaped string *values* (16+ uppercase-alnum run), not just sensitive keys.

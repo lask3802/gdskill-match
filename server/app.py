@@ -320,6 +320,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(err[1], err[0], cors_origin=origin)
             return
         status, body = ingest.ingest(payload, VERSION)
+        # Drop any cached overlay so the new upload takes effect immediately.
+        gsv_id = payload.get("gsvPlayerId") if isinstance(payload, dict) else None
+        if isinstance(gsv_id, int) and not isinstance(gsv_id, bool):
+            try:
+                get_engine(VERSION).invalidate_overlay(gsv_id)
+            except Exception:  # noqa: BLE001 — cache invalidation must not break the response
+                pass
         self._send_json(body, status, cors_origin=origin)
 
     def _handle_publish(self):
@@ -353,6 +360,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         latest["visibility"] = visibility
         userstore.set_latest(VERSION, gsv_id, latest)
+        try:
+            get_engine(VERSION).invalidate_overlay(gsv_id)
+        except Exception:  # noqa: BLE001 — cache invalidation must not break the response
+            pass
         self._send_json({"status": "ok", "gsvPlayerId": gsv_id, "visibility": visibility},
                         200, cors_origin=origin)
 

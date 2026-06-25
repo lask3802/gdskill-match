@@ -35,6 +35,7 @@ import json
 import math
 import os
 import sys
+import time
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -166,22 +167,39 @@ class Engine:
         return round(min(1.0, float(shared) / 15.0), 2)
 
     # ---------------- overlay (uploaded full-data) ----------------
+    OVERLAY_TTL = 60.0  # seconds — lazy refresh so a new upload / publish-flip
+    #                     takes effect quickly without restarting the process.
+
     def get_overlay(self, i, as_owner=False):
         """Lazily load player i's uploaded overlay (spec §6), or None.
 
         Visibility-gated: the owner (`as_owner=True`) always sees their overlay;
         everyone else only sees it once it is `public`. Load failures fall back
         silently to base behaviour (spec §10) — never break the read path.
+
+        Cached with a short TTL so a fresh upload or a /api/publish visibility
+        flip is picked up promptly (see also `invalidate_overlay`).
         """
-        if i not in self._overlay_cache:
-            self._overlay_cache[i] = self._load_overlay(i)
-        entry = self._overlay_cache[i]
+        now = time.time()
+        cached = self._overlay_cache.get(i)
+        if cached is None or (now - cached[1]) > self.OVERLAY_TTL:
+            self._overlay_cache[i] = (self._load_overlay(i), now)
+            cached = self._overlay_cache[i]
+        entry = cached[0]
         if entry is None:
             return None
         ov, visibility = entry
         if as_owner or visibility == "public":
             return ov
         return None
+
+    def invalidate_overlay(self, gsv_player_id):
+        """Drop any cached overlay for a player so the next request reloads it.
+        Called after an upload or a /api/publish visibility flip so changes are
+        visible immediately rather than only after the TTL expires."""
+        for idx, p in enumerate(self.players):
+            if p.get("playerId") == gsv_player_id:
+                self._overlay_cache.pop(idx, None)
 
     def _load_overlay(self, i):
         """Build and cache `(Overlay, visibility)` for player i, or None."""
@@ -232,7 +250,10 @@ class Engine:
         # i's weighted overlay z vector over evaluated, supported charts
         m = ov.eval_mask & self.support_mask
         zi = np.zeros(self.C, dtype=np.float32)
-        zi[m] = ((ov.skill_mean[m] - self.chart_mean[m]) / self.chart_std[m]).astype(np.float32)
+        # propagate observation uncertainty into the z denominator (spec §6.1):
+        # sqrt(chart_std^2 + skill_sd^2) so a fuzzy rank-only obs is shrunk toward 0.
+        denom_i = np.sqrt(self.chart_std[m] ** 2 + ov.skill_sd[m] ** 2)
+        zi[m] = ((ov.skill_mean[m] - self.chart_mean[m]) / denom_i).astype(np.float32)
         zi = zi * ov.obs_weight.astype(np.float32)
         num = self.zn @ zi                                        # P (shared-only: zeros cancel)
         ni = np.sqrt(self.presf @ (zi * zi))                      # ||zi|| over each peer's held set
@@ -354,8 +375,13 @@ class Engine:
         lo, hi = ov_med - 2.5, ov_max + 0.6
 
         def wz_ov(ci):
-            return (float((ov.skill_mean[ci] - wmean[ci]) / wstd[ci])
-                    if wsw[ci] > 1e-6 else None)
+            # spec §6.1: z = (skill_mean - bracket_mean) / sqrt(bracket_std^2 + skill_sd^2)
+            # so a high-variance rank-only observation is ranked less confidently
+            # than an exact one on the same chart.
+            if wsw[ci] <= 1e-6:
+                return None
+            denom = math.sqrt(float(wstd[ci]) ** 2 + float(ov.skill_sd[ci]) ** 2)
+            return float((ov.skill_mean[ci] - wmean[ci]) / denom) if denom > 1e-9 else None
 
         rows = []
         for ci in eval_ids:
