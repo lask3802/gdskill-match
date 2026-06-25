@@ -1,5 +1,8 @@
 __pycache__/
 *.pyc
+.pytest_cache/
+node_modules/
+package-lock.json
 .playwright-mcp/
 /*.png
 # scraped + derived data is fetched on first run (run.ps1 / run.sh); not redistributed
