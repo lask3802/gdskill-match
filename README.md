@@ -128,6 +128,39 @@ API（`http://127.0.0.1:8770/api/...`）：
 
 ---
 
+## 上傳完整資料（選用，讓分析更精準）
+
+gsv 技能帳只有「最強 50 曲」，帶有倖存者偏差。自願的玩家可以用書籤工具（bookmarklet）
+從 KONAMI **e-amusement 官方頁**抓取自己的**完整遊玩資料**（含每曲達成率）並上傳，把自己的
+向量**稠密化**，使個人頁／相似玩家／選曲推薦更準確。上傳資料走 **overlay 疊加層**，
+**絕不**寫進 `matrix.npz` 或改動 base 的 per-chart 統計。
+
+操作（前端「上傳資料」分頁，每位玩家頁底部）：
+
+1. **安裝書籤**：把「GD 上傳完整資料」連結拖到瀏覽器書籤列（它會載入 `web/bookmarklet.js`）。
+2. **在 e-amusement 執行**：登入官方頁後點該書籤。標準模式約 5–10 分鐘——先掃 37 個曲別列表頁，
+   再針對性抓取約 120 首詳細達成率；採**序列化節流**（類別頁 1–1.5s、detail 2–3s + jitter，
+   遇 429/5xx 退避並停止）以降低伺服器負擔，完成後下載一個正規化 JSON。
+3. **上傳 JSON**：在同一頁選擇剛下載的檔案送出（**同源**上傳，避開 CORS）。
+
+隱私（spec §5、§8、§9）：
+
+- 身分為**自陳**（無伺服器端 KONAMI 驗證），以玩家名 + DM skillpoint 機率式連結；模糊/失敗
+  → 隔離保存，**不覆蓋**既有資料。
+- **預設私有**：上傳後只有你（憑回傳的分享權杖）看得到強化結果；可一鍵公開成為他人可比較的節點。
+- **絕不**存取或傳輸卡號（カードナンバー）／cookie／原始 HTML。
+
+上傳路由（`POST /api/upload`、`/api/publish`）**預設關閉**（公開的 Cloud Run 維持唯讀）。
+本機啟用：
+
+```powershell
+$env:GD_ENABLE_UPLOAD = "1"; ./run.ps1      # 或 python server/app.py --enable-upload
+```
+
+書籤解析器有 Node 單元測試：`node --test web/bookmarklet.test.mjs`。
+
+---
+
 ## 部署到 GCP（Cloud Run + 排程 Cloud Function）
 
 架構（`$PROJECT_ID`、`$GCS_BUCKET` 等為你自己的設定，不寫死在 repo）：

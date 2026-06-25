@@ -70,6 +70,23 @@ const TAG_KEY = { popular: "tagPopular", highGain: "tagHighGain", efficient: "ta
 let META = null;
 let CURRENT_ID = null;
 
+/* Overlay share tokens (spec §9): the owner's one-time token, kept in
+   localStorage keyed by the player's internal id so we can (a) request the
+   private overlay via ?token= and (b) flip visibility via /api/publish. */
+const TOKENS_KEY = "gd_overlay_tokens";
+function loadTokens() {
+  try { return JSON.parse(localStorage.getItem(TOKENS_KEY) || "{}") || {}; }
+  catch (e) { return {}; }
+}
+function getToken(internalId) { return loadTokens()[String(internalId)] || null; }
+function saveToken(internalId, info) {
+  try {
+    const m = loadTokens();
+    m[String(internalId)] = Object.assign({}, m[String(internalId)], info);
+    localStorage.setItem(TOKENS_KEY, JSON.stringify(m));
+  } catch (e) { /* private mode / quota: tokens just won't persist */ }
+}
+
 function twDate(builtAt) {
   const d = new Date(builtAt);
   if (isNaN(d)) return String(builtAt).slice(0, 13);
@@ -155,15 +172,29 @@ async function loadPlayer(id) {
   CURRENT_ID = id;
   app.innerHTML = `<div class="loading"><span class="spin"></span> ${t("analyzing")}</div>`;
   window.scrollTo({ top: 0, behavior: "auto" });
+  // Owner overlay token: a share token in the URL takes precedence over a stored
+  // one (lets a shared ?p=&token= link work on a fresh device); both grant the
+  // owner a private-overlay read via ?token=.
+  const stored = getToken(id);
+  const urlToken = new URL(location.href).searchParams.get("token");
+  const token = urlToken || (stored && stored.token);
+  const q = token ? `?token=${encodeURIComponent(token)}` : "";
   let data;
-  try { data = await api(`/api/player/${id}/all`); }
+  try { data = await api(`/api/player/${id}/all${q}`); }
   catch (e) { app.innerHTML = `<div class="empty">${t("loadFail", { msg: esc(e.message) })}</div>`; return; }
+  // Persist/refresh the token (carry the gsvPlayerId the publish route needs);
+  // keep the token out of the visible address bar.
+  if (token) {
+    saveToken(id, { token, gsvPlayerId: data.profile.player.playerId,
+                    visibility: data.profile.visibility || (stored && stored.visibility) || "private" });
+  }
   history.replaceState(null, "", `?p=${id}`);
   app.innerHTML = "";
   app.appendChild(renderHero(data.profile));
   app.appendChild(renderSimilar(data.similar, data.profile));
   app.appendChild(renderRivals(data.rivals, data.profile));
   app.appendChild(renderSongs(data.songs, data.profile));
+  app.appendChild(renderUpload(data.profile));
 }
 
 /* ---------------- hero / profile ---------------- */
@@ -171,12 +202,15 @@ function renderHero(p) {
   const sec = el("section", "section"); sec.id = "hero";
   const pl = p.player;
   const maxBar = Math.max(p.hotPoint, p.otherPoint) * 1.05 || 1;
+  const enhanced = p.enhanced === true;
+  const eBadge = enhanced
+    ? `<span class="ebadge" title="${esc(t("enhancedTitle"))}">${t("enhancedBadge")}</span>` : "";
 
   const left = el("div", "left");
   left.innerHTML = `
     <div class="pname">
       <h2 class="skillc" style="background-image:${gdSkillBg(pl.sp)}">${esc(pl.name)}</h2>
-      <span class="tier">${gdName(pl.sp)}</span>
+      <span class="tier">${gdName(pl.sp)}</span>${eBadge}
       <a class="gsv" href="${esc(pl.gsvUrl)}" target="_blank" rel="noopener">${t("gsvProfile")}</a>
     </div>
     <div class="readout">
@@ -203,6 +237,7 @@ function renderHero(p) {
       <div class="stat"><div class="k">${t("statAvgAch")}</div><div class="v">${(p.avgAch*100).toFixed(2)}<small>%</small></div></div>
       <div class="stat"><div class="k">${t("statBracket")}</div><div class="v">${fmt(p.kasegiScope)}<small>+</small></div></div>
     </div>
+    ${enhanced ? renderOverlayPanel(p) : ""}
     ${renderHist(p.levelHist)}
     ${renderSignature(p.signature)}
     ${renderImprove(p.improve)}
@@ -280,6 +315,16 @@ function renderImprove(list) {
     `<div class="li"><span class="s">${esc(c.name)} ${lvtag(c.diff, c.level)}</span>
       <span class="vs"><span style="color:var(--coral)">z ${c.z}</span> · ${pct(c.ach)}</span></div>`).join("");
   return `<div class="mini"><div class="mt">${t("improveTitle")} ${help(t("zShort"))}</div>${items}</div>`;
+}
+// Summary of the uploaded overlay shown in the hero when the profile is enhanced.
+function renderOverlayPanel(p) {
+  const os = p.overlayStats || {};
+  const vis = p.visibility || "private";
+  const visTxt = vis === "public" ? t("visibilityPublic") : t("visibilityPrivate");
+  return `<div class="overlay-panel">
+    <div class="op-line">${t("overlayStatsLine", { played: fmt(os.played), evaluated: fmt(os.evaluated), exact: fmt(os.exact), coarse: fmt(os.coarse) })}</div>
+    <div class="op-vis">${t("visLabel")}: <b class="vis ${vis}">${visTxt}</b></div>
+  </div>`;
 }
 
 /* ---------------- similar players ---------------- */
@@ -364,6 +409,9 @@ function h2hLine(h, cls) {
 
 /* ---------------- songs ---------------- */
 const SONG_TABS = [["combined", "tabCombined", "tabHintCombined"], ["skillUp", "tabSkillUp", "tabHintSkillUp"], ["discovery", "tabDiscovery", "tabHintDiscovery"]];
+// When the player has an uploaded overlay the engine returns the three dense-data
+// classes (spec §6.3) instead of the sweet-spot tab.
+const ENHANCED_SONG_TABS = [["practiceTargets", "tabPractice", "tabHintPractice"], ["skillUp", "tabSkillUp", "tabHintSkillUpOv"], ["discovery", "tabDiscovery", "tabHintDiscovery"]];
 function songWhy(c, kind) {
   if (kind === "discovery")
     return t("whyDiscovery", { nbr: c.neighborHolders, total: c.neighborTotal, level: LV(c.level), kasegi: c.inKasegi ? t("whyKasegiSuffix") : "" });
@@ -373,20 +421,26 @@ function songWhy(c, kind) {
 }
 function renderSongs(songs, prof) {
   const sec = el("section", "section"); sec.id = "songs";
-  sec.appendChild(el("div", "head", `<span class="idx">04</span><h2>${t("secSongs")} ${help(t("songsHelp"))}</h2>
+  const enhanced = songs.enhanced === true;
+  const eBadge = enhanced ? ` <span class="ebadge" title="${esc(t("enhancedTitle"))}">${t("enhancedBadge")}</span>` : "";
+  sec.appendChild(el("div", "head", `<span class="idx">04</span><h2>${t("secSongs")}${eBadge} ${help(t("songsHelp"))}</h2>
     <span class="note">${t("songsNote", { scope: fmt(songs.kasegiScope), med: songs.myMedianLevel, max: songs.myMaxLevel })}</span>`));
 
+  const tabSet = enhanced ? ENHANCED_SONG_TABS : SONG_TABS;
   const tabs = el("div", "tabs");
   const listWrap = el("div", "songlist");
-  let active = "combined";
+  let active = tabSet[0][0];
   function paint() {
     [...tabs.children].forEach(t_ => t_.classList.toggle("on", t_.dataset.k === active));
     const data = songs[active] || [];
     listWrap.innerHTML = "";
     if (!data.length) { listWrap.appendChild(el("div", "empty", t("songsEmpty"))); return; }
-    data.forEach(c => listWrap.appendChild(songRow(c, active)));
+    // Enhanced practiceTargets / skillUp carry overlay-specific fields (currentAch,
+    // neededAch, headroom …); discovery keeps the base shape.
+    const enhRow = enhanced && (active === "practiceTargets" || active === "skillUp");
+    data.forEach(c => listWrap.appendChild(enhRow ? enhancedSongRow(c, active) : songRow(c, active)));
   }
-  SONG_TABS.forEach(([k, labelKey, hintKey]) => {
+  tabSet.forEach(([k, labelKey, hintKey]) => {
     const tab = el("div", "tab"); tab.dataset.k = k;
     tab.innerHTML = `${t(labelKey)} <span class="ct">${(songs[k]||[]).length}</span>`;
     tab.title = t(hintKey);
@@ -397,6 +451,53 @@ function renderSongs(songs, prof) {
   sec.appendChild(listWrap);
   paint();
   return sec;
+}
+// Row renderer for the overlay-only classes (practiceTargets / dense skillUp).
+function enhancedSongRow(c, kind) {
+  const row = el("div", "song");
+  row.setAttribute("role", "button");
+  row.setAttribute("tabindex", "0");
+  const tags = (c.tags || []).map(k => `<span class="tag">${t(TAG_KEY[k] || k)}</span>`).join("");
+  const obsTag = c.exact
+    ? `<span class="tag exact">${t("exactTag")}</span>`
+    : `<span class="tag coarse">${t("coarseTag")}</span>`;
+  let why, right;
+  if (kind === "practiceTargets") {
+    why = t("whyPractice", {
+      curAch: (c.currentAch * 100).toFixed(2), needAch: (c.neededAch * 100).toFixed(2),
+      pool: c.pool.toUpperCase(), cutoff: fmt(c.cutoff, 2), gain: fmt(c.gainIfCutoff, 2),
+    });
+    right = `<div class="gain" title="${esc(t("gainIfCutoffTitle"))}">+${fmt(c.gainIfCutoff, 2)}</div>
+      <div class="sub tgt">${t("targetPct", { pct: (c.neededAch * 100).toFixed(2) })}</div>
+      <div class="sub">${t("curAchLabel", { v: (c.currentAch * 100).toFixed(2) })}</div>`;
+  } else { // overlay skillUp: already in sheet, headroom to push achievement
+    why = t("whySkillUpOv", {
+      curAch: (c.currentAch * 100).toFixed(2), head: fmt(c.headroom, 2),
+      pool: c.pool.toUpperCase(), cutoff: fmt(c.cutoff, 2),
+    });
+    right = `<div class="gain" title="${esc(t("headroomTitle"))}">+${fmt(c.headroom, 2)}</div>
+      <div class="sub">${t("curAchLabel", { v: (c.currentAch * 100).toFixed(2) })}</div>
+      <div class="sub">${t("cutoffLabel", { v: fmt(c.cutoff, 2) })}</div>`;
+  }
+  row.innerHTML = `
+    <div class="lvbadge" style="background:${diffColor(c.diff)}" title="${c.diffFull} · Lv${LV(c.level)}">
+      <span class="n">${LV(c.level)}</span><span class="d">${c.diff}</span>
+    </div>
+    <div class="body">
+      <div class="nm"><span class="snm">${esc(c.name)}</span>
+        <span class="tag ${c.pool}">${c.pool.toUpperCase()}</span>
+        ${obsTag}
+        ${ytLinkEl(c.name)}</div>
+      <div class="why">${esc(why)}</div>
+      <div class="tags">${tags}</div>
+    </div>
+    <div class="right">${right}</div>
+  `;
+  row.onclick = () => openChart(c.id);
+  row.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openChart(c.id); } };
+  const yt = row.querySelector(".ytlink");
+  if (yt) yt.onclick = e => e.stopPropagation();
+  return row;
 }
 function songRow(c, kind) {
   const row = el("div", "song");
@@ -513,6 +614,155 @@ function renderChartModal(d) {
   });
   document.body.appendChild(overlay);
   document.addEventListener("keydown", _esc);
+}
+
+/* ---------------- upload full official data (spec §4.4, §5, §9) ---------------- */
+// Build the drag-to-bookmarks loader for the current player. It injects
+// /bookmarklet.js into the authenticated e-amusement tab and runs it with an
+// upload spec carrying this player's identity (so the server can self-attest
+// link the result). No uploadUrl => the bookmarklet downloads a JSON file, which
+// the player then submits through the same-origin file uploader below (MVP path).
+function bookmarkletHref(pl) {
+  const spec = {
+    version: (META && META.version) || "galaxywave_delta",
+    gsvPlayerId: pl.playerId,
+    profile: { playerName: pl.name, drumSkillPoint: pl.sp },
+    mode: "standard",
+    detailCap: 120,
+  };
+  const src = location.origin + "/bookmarklet.js";
+  return "javascript:(function(){var d=document,s=d.createElement('script');"
+    + "s.src=" + JSON.stringify(src) + ";"
+    + "s.onload=function(){GDSkillBookmarklet.run(" + JSON.stringify(spec) + ");};"
+    + "d.body.appendChild(s);})();";
+}
+
+function renderUpload(prof) {
+  const sec = el("section", "section"); sec.id = "upload";
+  const pl = prof.player;
+  sec.appendChild(el("div", "head", `<span class="idx">05</span><h2>${t("secUpload")} ${help(t("uploadHelp"))}</h2>
+    <span class="note">${t("uploadNote")}</span>`));
+
+  const box = el("div", "upload-box");
+  box.innerHTML = `
+    <ol class="upload-steps">
+      <li>
+        <div class="ust">${t("uploadStep1Title")}</div>
+        <div class="usb">${t("uploadStep1Body")}</div>
+        <div class="bm-wrap"></div>
+      </li>
+      <li>
+        <div class="ust">${t("uploadStep2Title")}</div>
+        <div class="usb">${t("uploadStep2Body")}</div>
+      </li>
+      <li>
+        <div class="ust">${t("uploadStep3Title")}</div>
+        <div class="usb">${t("uploadStep3Body")}</div>
+        <div class="file-row">
+          <input type="file" id="upfile" accept="application/json,.json" />
+          <button class="ubtn" id="upbtn">${t("uploadSubmit")}</button>
+        </div>
+      </li>
+    </ol>
+    <div class="upload-result" id="upresult"></div>
+    <div class="upload-privacy">${t("uploadPrivacyNote")}</div>`;
+
+  // Bookmarklet anchor: set href via DOM property (not innerHTML) so the
+  // javascript: URL is preserved verbatim for drag-to-bookmark. Clicking it on
+  // this page would do nothing useful, so we suppress navigation and rely on drag.
+  const a = document.createElement("a");
+  a.className = "bm-link";
+  a.href = bookmarkletHref(pl);
+  a.textContent = t("uploadBookmarkletLabel");
+  a.title = t("uploadBookmarkletTitle");
+  a.draggable = true;
+  a.onclick = e => e.preventDefault();
+  box.querySelector(".bm-wrap").appendChild(a);
+
+  const fileInput = box.querySelector("#upfile");
+  const result = box.querySelector("#upresult");
+  box.querySelector("#upbtn").onclick = () => doUpload(fileInput, result);
+
+  sec.appendChild(box);
+
+  // If we hold this player's share token, surface the publish/visibility controls.
+  const tok = getToken(CURRENT_ID);
+  if (tok && tok.token) sec.appendChild(renderManage(prof, tok));
+  return sec;
+}
+
+async function doUpload(fileInput, result) {
+  const f = fileInput.files && fileInput.files[0];
+  if (!f) { result.innerHTML = `<div class="ures err">${t("uploadNoFile")}</div>`; return; }
+  let text, payload;
+  try { text = await f.text(); payload = JSON.parse(text); }
+  catch (e) { result.innerHTML = `<div class="ures err">${t("uploadBadJson")}</div>`; return; }
+  result.innerHTML = `<div class="ures">${t("uploadSending")}</div>`;
+  let r, body;
+  try {
+    r = await fetch("/api/upload", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: text,
+    });
+    body = await r.json();
+  } catch (e) {
+    result.innerHTML = `<div class="ures err">${t("uploadNetErr", { msg: esc(e.message) })}</div>`;
+    return;
+  }
+  if (r.status === 200 && body.status === "linked") {
+    const id = body.linkedDbId;
+    saveToken(id, { token: body.token, gsvPlayerId: body.gsvPlayerId, visibility: body.visibility });
+    const link = `?p=${id}&token=${encodeURIComponent(body.token)}`;
+    result.innerHTML =
+      `<div class="ures ok">${t("uploadResultLinked", { conf: Math.round((body.confidence || 0) * 100), charts: fmt(body.charts) })}</div>
+       <div class="ures token">${t("uploadTokenLabel")} <code>${esc(body.token)}</code></div>
+       <div class="ures"><a href="${link}">${t("uploadViewEnhanced")}</a></div>`;
+  } else if (r.status === 202 && body.status === "quarantined") {
+    result.innerHTML = `<div class="ures warn">${t("uploadResultQuarantined", { reason: esc(body.reason || ""), conf: Math.round((body.confidence || 0) * 100) })}</div>`;
+  } else {
+    const errs = (body && body.errors ? body.errors : [body && body.error || ("HTTP " + r.status)])
+      .map(esc).join("；");
+    result.innerHTML = `<div class="ures err">${t("uploadResultErrors", { errors: errs })}</div>`;
+  }
+}
+
+function renderManage(prof, tok) {
+  const wrap = el("div", "manage-box");
+  const vis = prof.visibility || tok.visibility || "private";
+  const isPublic = vis === "public";
+  const visTxt = isPublic ? t("visibilityPublic") : t("visibilityPrivate");
+  wrap.innerHTML = `
+    <div class="mb-h">${t("manageTitle")}</div>
+    <div class="mb-row">
+      <span>${t("visLabel")}: <b class="vis ${vis}">${visTxt}</b></span>
+      <button class="ubtn ${isPublic ? "danger" : ""}" id="pubbtn">${isPublic ? t("unpublishBtn") : t("publishBtn")}</button>
+    </div>
+    <div class="mb-note">${isPublic ? t("publicNote") : t("privateNote")}</div>
+    <div class="upload-result" id="manresult"></div>`;
+  const res = wrap.querySelector("#manresult");
+  wrap.querySelector("#pubbtn").onclick =
+    () => doPublish(tok.gsvPlayerId, tok.token, isPublic ? "private" : "public", res);
+  return wrap;
+}
+
+async function doPublish(gsvPlayerId, token, visibility, res) {
+  res.innerHTML = `<div class="ures">${t("publishSending")}</div>`;
+  let r, body;
+  try {
+    r = await fetch("/api/publish", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ gsvPlayerId, token, visibility }),
+    });
+    body = await r.json();
+  } catch (e) {
+    res.innerHTML = `<div class="ures err">${t("publishFail", { msg: esc(e.message) })}</div>`;
+    return;
+  }
+  if (r.ok && body.status === "ok") {
+    saveToken(CURRENT_ID, { token, gsvPlayerId, visibility });
+    loadPlayer(CURRENT_ID);   // re-render with the new visibility
+  } else {
+    res.innerHTML = `<div class="ures err">${t("publishFail", { msg: esc((body && body.error) || ("HTTP " + r.status)) })}</div>`;
+  }
 }
 
 boot();
