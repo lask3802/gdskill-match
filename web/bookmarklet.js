@@ -360,6 +360,16 @@
     return payload;
   }
 
+  /**
+   * isUnavailablePage(html) -> true when the fetched page is an e-amusement
+   * maintenance ("メンテナンス") or login-required ("ログインが必要") shell rather
+   * than real play data. Used to abort the sweep immediately so we never hammer
+   * KONAMI with 37 requests during maintenance nor upload an empty payload.
+   */
+  function isUnavailablePage(html) {
+    return /メンテナンス|ログインが必要/.test(String(html == null ? '' : html));
+  }
+
   // ---- browser runtime: rank sweep + targeted detail + upload -----------------
   // Only meaningful inside the authenticated eagate tab; guarded so Node never runs it.
 
@@ -454,20 +464,26 @@
     var catRows = [];
     var bySid = {};
     var failures = 0;
+    var aborted = false;   // set when a maintenance / login page is detected
 
     // 1) Rank sweep over cat=0..36 (serial, 1–1.5s apart).
     function sweep(cat) {
-      if (cat > 36 || failures >= 3) return Promise.resolve();
+      if (cat > 36 || failures >= 3 || aborted) return Promise.resolve();
       var url = base + 'music.html?gtype=' + GTYPE + '&cat=' + cat;
       return _fetchText(url).then(function (html) {
         if (html == null) { failures += 1; }
-        else {
+        else if (isUnavailablePage(html) || (cat === 0 && parseCategory(html).length === 0)) {
+          // Maintenance / not logged in: stop now — don't fetch the other 36 pages.
+          aborted = true;
+          return Promise.resolve();
+        } else {
           failures = 0;
           parseCategory(html).forEach(function (r) {
             if (!bySid[r.sid]) { bySid[r.sid] = r; catRows.push(r); }
             else { bySid[r.sid].ranks = r.ranks; }
           });
         }
+        if (aborted) return Promise.resolve();
         return _sleep(_jitter(1000, 1500)).then(function () { return sweep(cat + 1); });
       });
     }
@@ -506,7 +522,17 @@
       return step();
     }
 
-    return sweep(0).then(fetchDetails).then(function (details) {
+    return sweep(0).then(function () {
+      // Abort cleanly on a maintenance / login page: never upload an empty payload.
+      if (aborted || catRows.length === 0) {
+        return { error: 'unavailable',
+                 reason: 'no song data found — e-amusement may be under maintenance '
+                       + 'or you are not logged in. Log in, wait for the site to be up, '
+                       + 'and run the bookmarklet again.' };
+      }
+      return fetchDetails();
+    }).then(function (details) {
+      if (details && details.error) return details;   // pass the abort result through
       var scraped = { catRows: catRows, details: details, scrapedAt: new Date().toISOString() };
       var payload = buildPayload(spec.profile || {}, scraped, spec);
       if (!spec.uploadUrl) { _downloadJson(payload); return payload; }
@@ -531,6 +557,7 @@
     parseDetail: parseDetail,
     pickDetailQueue: pickDetailQueue,
     buildPayload: buildPayload,
+    isUnavailablePage: isUnavailablePage,
     run: run,
   };
 

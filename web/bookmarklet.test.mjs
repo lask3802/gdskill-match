@@ -172,3 +172,12 @@ test('buildPayload attaches catalog levels to rank-only charts', () => {
   // Rank-only charts with no known level are dropped (cannot pass validate()).
   assert.ok(!p.charts.some((c) => c.level == null));
 });
+
+// ---- isUnavailablePage (maintenance / login guard, surfaced by live run) -------
+
+test('isUnavailablePage detects maintenance and login shells', () => {
+  assert.strictEqual(bm.isUnavailablePage('<div>ただいまメンテナンス中のためご利用いただけません</div>'), true);
+  assert.strictEqual(bm.isUnavailablePage('<p>このページのご利用にはe-amusementへのログインが必要です</p>'), true);
+  assert.strictEqual(bm.isUnavailablePage(catHtml), false);   // a real category page is fine
+  assert.strictEqual(bm.isUnavailablePage(''), false);
+});
