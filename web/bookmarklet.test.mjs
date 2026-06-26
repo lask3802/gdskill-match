@@ -191,12 +191,15 @@ test('isUnavailablePage detects maintenance and login shells', () => {
   assert.strictEqual(bm.isUnavailablePage(''), false);
 });
 
-// ---- run(): interleaved list->detail per category (mechanism verified live 2026-06-26) ----
+// ---- run(): interleaved list->detail per category (opt-in spec.fetchDetails) ----
 // The detail page only returns scores when the session "current cat" (set by fetching
-// music.html?cat=N) matches the detail's cat, so run() must fetch each category's list
-// immediately before that category's details. This test mocks fetch + timers (no network).
+// music.html?cat=N) matches the detail's cat, so when detail fetching is enabled run() must
+// fetch each category's list immediately before that category's details. This test mocks
+// fetch + timers (no network) to verify that ORDERING and the payload assembly. (Exact-detail
+// is OFF by default in real use — the live detail session is fragile under bulk fetching; see
+// the run() docstring. This test opts in via fetchDetails:true to exercise the logic.)
 
-test('run interleaves list then detail per category and yields exact achievement', async () => {
+test('run (fetchDetails:true) interleaves list then detail per category and yields exact achievement', async () => {
   const realFetch = globalThis.fetch;
   const realSetTimeout = globalThis.setTimeout;
   globalThis.setTimeout = (fn) => { fn(); return 0; };          // collapse throttle waits
@@ -213,7 +216,7 @@ test('run interleaves list then detail per category and yields exact achievement
   };
   try {
     const payload = await bm.run({ version: 'galaxywave_delta', gsvPlayerId: 1,
-                                   uploadUrl: 'http://up/', detailCap: 5 });
+                                   uploadUrl: 'http://up/', detailCap: 5, fetchDetails: true });
     // interleave: the cat=0 list fetch must precede the (cat=0) detail fetch
     const listIdx = calls.findIndex((u) => /music\.html\?gtype=dm&cat=0(?:&|$)/.test(u));
     const detIdx = calls.findIndex((u) => /music_detail\.html/.test(u));

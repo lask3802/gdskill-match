@@ -13,7 +13,9 @@
  *   - Never store/transmit カードナンバー / cookies / raw HTML: buildPayload() copies only a
  *     whitelist of profile fields, and only normalised chart metrics travel (spec §5.3, §8).
  *   - skill = level * 20 * achievement; achievement is a fraction 0..1 (spec §2).
- *   - Chart identity = (name, diff); diff ∈ {BAS,ADV,EXT,MAS}; sid is the stable eagate song id.
+ *   - Chart identity = (name, diff); diff ∈ {BAS,ADV,EXT,MAS}. NOTE: the eagate `sid` query
+ *     param is a CONSTANT game id (DrumMania = 2), not a song key — songs are addressed
+ *     positionally by (cat, page, index) and identified by name (verified live 2026-06-26).
  *   - No eval / no innerHTML injection: parsing is pure text/regex extraction over the fetched
  *     HTML *string* (what fetch().then(r=>r.text()) yields) — the same code path the Node tests
  *     exercise, so there is no DOM dependency (see web/bookmarklet.test.mjs header).
@@ -470,15 +472,23 @@
    * the rank medals, then — while that session is current — fetches the selected music_detail
    * pages for THAT category to read exact 達成率. Verified live 2026-06-26: a detail fetch only
    * returns real scores when the session's current cat (set by fetching music.html?cat=N)
-   * matches the detail's cat; a cross-category detail fetch redirects to /error/. Serial +
-   * throttled + cached; then POST to spec.uploadUrl (credentials omitted) with a download-JSON
-   * fallback. Set spec.fetchDetails === false for the cheap rank-only sweep (no detail fetches).
+   * matches the detail's cat; a cross-category detail fetch redirects to /error/.
+   *
+   * RELIABILITY CAVEAT (verified live 2026-06-26): exact-detail fetching is OFF by default
+   * (opt in with spec.fetchDetails === true) and is EXPERIMENTAL. The detail server's session
+   * state is fragile under bulk fetching — category 0 (数字記号) needs cat= empty rather than
+   * cat=0, and once any detail request errors (/error/ or 404) it POISONS the session so
+   * subsequent detail fetches 404. Isolated detail fetches return real 達成率, but a robust
+   * bulk pass was not achieved this way. The reliable, default path is the 37-page rank sweep;
+   * the server's Bayesian rank→achievement prior supplies achievement, and exact top-50 data
+   * still comes from gsv. Serial + throttled + cached; POST to spec.uploadUrl (credentials
+   * omitted) with a download-JSON fallback.
    */
   function run(spec) {
     spec = spec || {};
     var version = spec.version || DEFAULT_VERSION;
     var base = _baseUrl(spec);
-    var wantDetails = spec.fetchDetails !== false;       // exact-detail ON by default
+    var wantDetails = spec.fetchDetails === true;        // exact-detail OFF by default (fragile; see above)
     var detailBudget = spec.detailCap || DEFAULT_DETAIL_CAP;
     var catRows = [];
     var byName = {};
