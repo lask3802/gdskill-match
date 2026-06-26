@@ -465,79 +465,85 @@
   }
 
   /**
-   * run(spec) — browser-only orchestrator: cheap 37-page rank sweep, targeted detail fetches
-   * (serial + throttled + cached), then POST to spec.uploadUrl (credentials omitted) with a
-   * download-JSON fallback. Returns the payload it built.
+   * run(spec) — browser-only orchestrator. INTERLEAVED per-category pass: for each cat=0..36
+   * it fetches the list page (which sets the server-side session "current category"), parses
+   * the rank medals, then — while that session is current — fetches the selected music_detail
+   * pages for THAT category to read exact 達成率. Verified live 2026-06-26: a detail fetch only
+   * returns real scores when the session's current cat (set by fetching music.html?cat=N)
+   * matches the detail's cat; a cross-category detail fetch redirects to /error/. Serial +
+   * throttled + cached; then POST to spec.uploadUrl (credentials omitted) with a download-JSON
+   * fallback. Set spec.fetchDetails === false for the cheap rank-only sweep (no detail fetches).
    */
   function run(spec) {
     spec = spec || {};
     var version = spec.version || DEFAULT_VERSION;
     var base = _baseUrl(spec);
+    var wantDetails = spec.fetchDetails !== false;       // exact-detail ON by default
+    var detailBudget = spec.detailCap || DEFAULT_DETAIL_CAP;
     var catRows = [];
     var byName = {};
+    var details = {};
     var failures = 0;
     var aborted = false;   // set when a maintenance / login page is detected
 
-    // 1) Rank sweep over cat=0..36 (serial, 1–1.5s apart).
-    function sweep(cat) {
-      if (cat > 36 || failures >= 3 || aborted) return Promise.resolve();
-      var url = base + 'music.html?gtype=' + GTYPE + '&cat=' + cat;
-      return _fetchText(url).then(function (html) {
+    // Fetch this category's selected details serially (2–3s + jitter) WHILE the server
+    // session's current cat == this cat. Honours the localStorage cache and the budget.
+    function fetchCatDetails(names, i) {
+      if (i >= names.length || failures >= 3 || detailBudget <= 0) return Promise.resolve();
+      var name = names[i];
+      var row = byName[name];
+      if (!row || !row.detailPath) return fetchCatDetails(names, i + 1);
+      var cached = _cacheGet(version, name);
+      if (!_needsDetail(cached, row, spec)) {
+        details[name] = cached.detail; detailBudget -= 1;
+        return fetchCatDetails(names, i + 1);            // cache hit: no network, no throttle
+      }
+      return _fetchText(base + row.detailPath).then(function (html) {   // detailPath = cat=N&index=M
         if (html == null) { failures += 1; }
-        else if (isUnavailablePage(html) || (cat === 0 && parseCategory(html).length === 0)) {
-          // Maintenance / not logged in: stop now — don't fetch the other 36 pages.
-          aborted = true;
-          return Promise.resolve();
-        } else {
+        else if (!isUnavailablePage(html)) {
           failures = 0;
-          parseCategory(html).forEach(function (r) {
-            if (!byName[r.name]) { byName[r.name] = r; catRows.push(r); }
-            else { byName[r.name].ranks = r.ranks; byName[r.name].detailPath = r.detailPath; }
+          var det = parseDetail(html, name);
+          details[name] = det; detailBudget -= 1;
+          _cacheSet(version, name, {
+            ranks: row.ranks, detail: det, fetchedAt: Date.now(),
+            wasRecommended: !!(spec.recommendNames && spec.recommendNames.indexOf(name) >= 0),
           });
         }
-        if (aborted) return Promise.resolve();
-        return _sleep(_jitter(1000, 1500)).then(function () { return sweep(cat + 1); });
+        return _sleep(_jitter(2000, 3000)).then(function () { return fetchCatDetails(names, i + 1); });
       });
     }
 
-    // 2) Targeted detail fetches (serial, 2–3s + jitter), honouring the localStorage cache.
-    //    Each song is fetched via its own list-row href (real cat/page/index), not a
-    //    reconstructed sid URL — sid is a constant game id, not a song key.
-    function fetchDetails() {
-      var queue = pickDetailQueue(catRows, spec);   // [name]
-      var details = {};
-      var idx = 0;
-      failures = 0;
-      function step() {
-        if (idx >= queue.length || failures >= 3) return Promise.resolve(details);
-        var name = queue[idx++];
-        var row = byName[name];
-        if (!row || !row.detailPath) return step();
-        var cached = _cacheGet(version, name);
-        if (!_needsDetail(cached, row, spec)) {
-          details[name] = cached.detail;
-          return step(); // cache hit: no network, no throttle
+    // Interleaved sweep: list (sets session current cat) -> this category's details -> next.
+    function processCat(cat) {
+      if (cat > 36 || failures >= 3 || aborted) return Promise.resolve();
+      var listUrl = base + 'music.html?gtype=' + GTYPE + '&cat=' + cat;
+      return _fetchText(listUrl).then(function (html) {
+        if (html == null) {
+          failures += 1;
+          return _sleep(_jitter(1000, 1500)).then(function () { return processCat(cat + 1); });
         }
-        var url = base + row.detailPath;   // exact (cat,page,index) href from the list page
-        return _fetchText(url).then(function (html) {
-          if (html == null) { failures += 1; }
-          else {
-            failures = 0;
-            var det = parseDetail(html, name);
-            details[name] = det;
-            _cacheSet(version, name, {
-              ranks: row.ranks, detail: det, fetchedAt: Date.now(),
-              wasRecommended: !!(spec.recommendNames &&
-                spec.recommendNames.indexOf(name) >= 0),
-            });
-          }
-          return _sleep(_jitter(2000, 3000)).then(step);
+        if (isUnavailablePage(html) || (cat === 0 && parseCategory(html).length === 0)) {
+          aborted = true;                                // maintenance / not logged in: stop
+          return Promise.resolve();
+        }
+        failures = 0;
+        var rows = parseCategory(html);
+        rows.forEach(function (r) {
+          if (!byName[r.name]) { byName[r.name] = r; catRows.push(r); }
+          else { byName[r.name].ranks = r.ranks; byName[r.name].detailPath = r.detailPath; }
         });
-      }
-      return step();
+        // Prioritise THIS category's played songs (spec §4.3), capped by the global budget.
+        // Early categories consume the budget first (a minor priority bias we accept to keep
+        // the session aligned without re-fetching list pages).
+        var names = (wantDetails && detailBudget > 0)
+          ? pickDetailQueue(rows, spec).slice(0, detailBudget) : [];
+        return _sleep(_jitter(1000, 1500))               // throttle after the list fetch
+          .then(function () { return fetchCatDetails(names, 0); })
+          .then(function () { return processCat(cat + 1); });
+      });
     }
 
-    return sweep(0).then(function () {
+    return processCat(0).then(function () {
       // Abort cleanly on a maintenance / login page: never upload an empty payload.
       if (aborted || catRows.length === 0) {
         return { error: 'unavailable',
@@ -545,17 +551,6 @@
                        + 'or you are not logged in. Log in, wait for the site to be up, '
                        + 'and run the bookmarklet again.' };
       }
-      // Exact-detail fetching is GATED OFF by default. Verified live 2026-06-26: the
-      // music_detail page is STATE-DEPENDENT — direct deep-links (cat=N&index=M) return
-      // empty scores or redirect to /error/ unless the matching list page was just
-      // interacted with. Until that addressing is reverse-engineered we ship the reliable
-      // 37-page rank sweep only; the server's rank→achievement Bayesian prior fills in the
-      // achievement, and buildPayload emits rank-only rows. This also keeps KONAMI load
-      // minimal. Opt in with spec.fetchDetails === true once the addressing is solved.
-      if (spec.fetchDetails) return fetchDetails();
-      return {};
-    }).then(function (details) {
-      if (details && details.error) return details;   // pass the abort result through
       var scraped = { catRows: catRows, details: details, scrapedAt: new Date().toISOString() };
       var payload = buildPayload(spec.profile || {}, scraped, spec);
       if (!spec.uploadUrl) { _downloadJson(payload); return payload; }

@@ -190,3 +190,39 @@ test('isUnavailablePage detects maintenance and login shells', () => {
   assert.strictEqual(bm.isUnavailablePage(catHtml), false);   // a real category page is fine
   assert.strictEqual(bm.isUnavailablePage(''), false);
 });
+
+// ---- run(): interleaved list->detail per category (mechanism verified live 2026-06-26) ----
+// The detail page only returns scores when the session "current cat" (set by fetching
+// music.html?cat=N) matches the detail's cat, so run() must fetch each category's list
+// immediately before that category's details. This test mocks fetch + timers (no network).
+
+test('run interleaves list then detail per category and yields exact achievement', async () => {
+  const realFetch = globalThis.fetch;
+  const realSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn) => { fn(); return 0; };          // collapse throttle waits
+  const calls = [];
+  const resp = (html) => ({ ok: true, status: 200, redirected: false, url: '',
+                            text: async () => html });
+  globalThis.fetch = async (url) => {
+    calls.push(url);
+    if (/music\.html\?gtype=dm&cat=0(?:&|$)/.test(url)) return resp(catHtml);   // cat 0 holds 10B
+    if (/music\.html\?gtype=dm&cat=\d+/.test(url)) return resp('<table></table>'); // other cats: empty
+    if (/music_detail\.html/.test(url)) return resp(detailHtml);                 // detail = 65.15%
+    if (url === 'http://up/') return { ok: true, status: 200, text: async () => '{}' };
+    return resp('');
+  };
+  try {
+    const payload = await bm.run({ version: 'galaxywave_delta', gsvPlayerId: 1,
+                                   uploadUrl: 'http://up/', detailCap: 5 });
+    // interleave: the cat=0 list fetch must precede the (cat=0) detail fetch
+    const listIdx = calls.findIndex((u) => /music\.html\?gtype=dm&cat=0(?:&|$)/.test(u));
+    const detIdx = calls.findIndex((u) => /music_detail\.html/.test(u));
+    assert.ok(listIdx >= 0 && detIdx > listIdx, 'list precedes detail');
+    // and the built payload carries the exact MASTER achievement from the detail page
+    const m = payload.charts.find((c) => c.name === '10,000,000,000' && c.diff === 'MAS');
+    assert.ok(m && m.exact === true && Math.abs(m.achievement - 0.6515) < 1e-4);
+  } finally {
+    globalThis.fetch = realFetch;
+    globalThis.setTimeout = realSetTimeout;
+  }
+});
