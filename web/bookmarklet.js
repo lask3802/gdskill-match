@@ -62,10 +62,11 @@
   }
 
   function parseIntOrNull(text) {
+    // Live values may carry a unit, e.g. プレー回数 "2 回"; scores may be comma-grouped.
+    // Strip commas, then take the first integer in the string.
     var t = textOf(text).replace(/,/g, '');
-    if (!/^-?\d+$/.test(t)) return null;
-    var n = parseInt(t, 10);
-    return isNaN(n) ? null : n;
+    var m = t.match(/-?\d+/);
+    return m ? parseInt(m[0], 10) : null;
   }
 
   function parseLevel(text) {
@@ -114,9 +115,13 @@
   // ---- parseCategory: music.html?gtype=dm&cat=N (list page) -------------------
 
   /**
-   * parseCategory(html) -> [{sid, name, ranks:{BAS,ADV,EXT,MAS}}].
-   * One row per song; each of the 4 difficulty cells carries a single best-rank medal as a
-   * CSS class. Header rows (no music_detail link) are skipped. `html` is the fetched page text.
+   * parseCategory(html) -> [{index, name, ranks:{BAS,ADV,EXT,MAS}, detailPath}].
+   * One row per song. IMPORTANT (verified live 2026-06-26): the official site
+   * identifies a song POSITIONALLY by (cat, page, index); the `sid` query param is a
+   * CONSTANT game id (DrumMania = 2), NOT a per-song id. So we key songs by NAME
+   * (matching the server's (name,diff) chart identity) and keep the row's relative
+   * music_detail href (`detailPath`, with its real cat/page/index) to fetch exact
+   * data. Header rows (no music_detail link) are skipped. `html` is the page text.
    */
   function parseCategory(html) {
     var rows = [];
@@ -126,10 +131,12 @@
     while ((tr = trRe.exec(src)) !== null) {
       var row = tr[1];
       var link = row.match(
-        /<a\b[^>]*href="[^"]*music_detail\.html\?[^"]*\bsid=(\d+)[^"]*"[^>]*>([\s\S]*?)<\/a>/i);
+        /<a\b[^>]*href="([^"]*music_detail\.html\?[^"]*)"[^>]*>([\s\S]*?)<\/a>/i);
       if (!link) continue; // header / non-song row
-      var sid = link[1];
+      var detailPath = decodeEntities(link[1]);            // &amp; -> & ; relative URL
       var name = textOf(link[2]);
+      var idxMatch = detailPath.match(/[?&]index=(\d+)/);
+      var index = idxMatch ? idxMatch[1] : null;
 
       // The 4 rank medals appear in document order = BAS, ADV, EXT, MAS.
       var medals = [];
@@ -143,7 +150,7 @@
       for (var d = 0; d < DIFF_ORDER.length; d++) {
         ranks[DIFF_ORDER[d]] = d < medals.length ? medals[d] : '-';
       }
-      rows.push({ sid: sid, name: name, ranks: ranks });
+      rows.push({ index: index, name: name, ranks: ranks, detailPath: detailPath });
     }
     return rows;
   }
@@ -177,9 +184,12 @@
       var end = (j + 1 < marks.length) ? marks[j + 1].idx : src.length;
       var section = src.slice(start, end);
 
-      // Level from the marker div text, e.g. `class="diff_MASTER">MASTER 9.40<`.
-      var lvlMatch = section.match(new RegExp('class="' + marks[j].cls + '"[^>]*>([^<]*)<'));
-      var level = lvlMatch ? parseLevel(lvlMatch[1]) : null;
+      // Level lives in/after the diff marker. Live structure (verified 2026-06-26) is a
+      // NESTED element, e.g. `<th class="diff_MASTER"><div class="diff_MASTER">9.35</div></th>`
+      // (number only); some skins use inline text ("MASTER 9.40"). Grab the first decimal
+      // number within the marker, tolerating nested tags either way.
+      var lvlMatch = section.match(new RegExp('class="' + marks[j].cls + '"[\\s\\S]{0,160}?(\\d+\\.\\d+)'));
+      var level = lvlMatch ? parseFloat(lvlMatch[1]) : null;
 
       var chart = {
         diff: marks[j].code, level: level, rank: '-', achievement: null, exact: false,
@@ -219,17 +229,18 @@
   }
 
   /**
-   * pickDetailQueue(catRows, spec) -> [sid].
+   * pickDetailQueue(catRows, spec) -> [name].
    * Only songs with at least one played difficulty (rank != '-') are candidates. They are
    * scored by best (rank × difficulty) potential, with large boosts for identity-challenge /
-   * recommended / kasegi songs (spec §4.3), then capped at `spec.detailCap` (default 120).
+   * recommended / kasegi songs (spec §4.3, keyed by NAME), then capped at `spec.detailCap`
+   * (default 120). Returns song NAMES (the stable identity); the caller maps name -> row.
    */
   function pickDetailQueue(catRows, spec) {
     spec = spec || {};
     var cap = spec.detailCap || DEFAULT_DETAIL_CAP;
-    var challenge = _toSet(spec.challengeSids);
-    var recommend = _toSet(spec.recommendSids);
-    var kasegi = _toSet(spec.kasegiSids);
+    var challenge = _toSet(spec.challengeNames);
+    var recommend = _toSet(spec.recommendNames);
+    var kasegi = _toSet(spec.kasegiNames);
     var diffWeight = { BAS: 1.0, ADV: 1.5, EXT: 2.0, MAS: 2.5 };
 
     var scored = [];
@@ -248,26 +259,26 @@
       }
       if (!played) continue; // spec §4.3: rank != '-' required
       var score = best;
-      if (challenge[row.sid]) score += 1000;   // identity verification — always fetch
-      if (recommend[row.sid]) score += 500;
-      if (kasegi[row.sid]) score += 300;
-      scored.push({ sid: row.sid, score: score, order: i });
+      if (challenge[row.name]) score += 1000;   // identity verification — always fetch
+      if (recommend[row.name]) score += 500;
+      if (kasegi[row.name]) score += 300;
+      scored.push({ name: row.name, score: score, order: i });
     }
     // Highest priority first; stable on original order for ties.
     scored.sort(function (a, b) { return (b.score - a.score) || (a.order - b.order); });
-    return scored.slice(0, cap).map(function (x) { return x.sid; });
+    return scored.slice(0, cap).map(function (x) { return x.name; });
   }
 
   // ---- buildPayload: schema-v1 payload from scraped data ----------------------
 
-  function _catalogLevel(spec, sid, diff) {
+  function _catalogLevel(spec, name, diff) {
     if (!spec) return null;
-    if (spec.catalog && spec.catalog[sid] && spec.catalog[sid].levels) {
-      var v = spec.catalog[sid].levels[diff];
+    if (spec.catalog && spec.catalog[name] && spec.catalog[name].levels) {
+      var v = spec.catalog[name].levels[diff];
       if (typeof v === 'number') return v;
     }
     if (spec.levels) {
-      var w = spec.levels[sid + '|' + diff];
+      var w = spec.levels[name + '|' + diff];
       if (typeof w === 'number') return w;
     }
     return null;
@@ -285,11 +296,13 @@
 
   /**
    * buildPayload(profile, scraped, spec) -> schema-v1 payload object.
-   *   scraped = { catRows:[...parseCategory...], details:{ <sid>: parseDetail }, scrapedAt }.
-   * For each (sid, diff) it prefers exact detail data (achievement -> exact:true), else emits a
-   * rank-only row IF a level is known (from the detail block or the spec catalog) — a row with
-   * no level is dropped because the server's validate() requires level ∈ [0,10]. Unplayed
-   * difficulties ('-') are never emitted. Only whitelisted profile fields travel.
+   *   scraped = { catRows:[...parseCategory...], details:{ <name>: parseDetail }, scrapedAt }.
+   * Charts are identified by NAME (the official site has no stable per-song id — see
+   * parseCategory). For each (name, diff) it prefers exact detail data (achievement ->
+   * exact:true), else emits a rank-only row IF a level is known (from the detail block or the
+   * spec catalog) — a row with no level is dropped because the server's validate() requires
+   * level ∈ [0,10]. Unplayed difficulties ('-') are never emitted. Only whitelisted profile
+   * fields travel.
    */
   function buildPayload(profile, scraped, spec) {
     scraped = scraped || {};
@@ -300,8 +313,7 @@
     var charts = [];
     for (var i = 0; i < catRows.length; i++) {
       var row = catRows[i];
-      var sid = String(row.sid);
-      var det = details[sid] || details[row.sid];
+      var det = details[row.name];
       var detByDiff = {};
       if (det && det.charts) {
         det.charts.forEach(function (c) { detByDiff[c.diff] = c; });
@@ -318,13 +330,13 @@
           rank = (dc.rank && dc.rank !== '-') ? dc.rank : listRank;
           achievement = dc.achievement;
           exact = dc.achievement != null;
-          level = (typeof dc.level === 'number') ? dc.level : _catalogLevel(spec, sid, diff);
+          level = (typeof dc.level === 'number') ? dc.level : _catalogLevel(spec, row.name, diff);
           rec = dc;
         } else if (listRank && listRank !== '-') {
           rank = listRank;
           achievement = null;
           exact = false;
-          level = _catalogLevel(spec, sid, diff);
+          level = _catalogLevel(spec, row.name, diff);
         } else {
           continue; // unplayed -> not an observation
         }
@@ -332,7 +344,7 @@
         if (!rank || rank === '-') continue;
 
         var chart = {
-          sid: sid, name: row.name, diff: diff, rank: rank,
+          name: row.name, diff: diff, rank: rank,
           achievement: achievement, exact: !!exact, level: level,
         };
         if (rec) {
@@ -387,24 +399,24 @@
     return lo + Math.random() * (hi - lo);
   }
 
-  // localStorage cache keyed by {version, sid} — rank snapshot + detail + fetchedAt (spec §4.2).
+  // localStorage cache keyed by {version, name} — rank snapshot + detail + fetchedAt (spec §4.2).
   var CACHE_TTL_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
 
-  function _cacheKey(version, sid) {
-    return 'gdskill:' + version + ':' + sid;
+  function _cacheKey(version, name) {
+    return 'gdskill:' + version + ':' + encodeURIComponent(name);
   }
 
-  function _cacheGet(version, sid) {
+  function _cacheGet(version, name) {
     try {
-      var raw = root.localStorage && root.localStorage.getItem(_cacheKey(version, sid));
+      var raw = root.localStorage && root.localStorage.getItem(_cacheKey(version, name));
       return raw ? JSON.parse(raw) : null;
     } catch (e) { return null; }
   }
 
-  function _cacheSet(version, sid, entry) {
+  function _cacheSet(version, name, entry) {
     try {
       if (root.localStorage) {
-        root.localStorage.setItem(_cacheKey(version, sid), JSON.stringify(entry));
+        root.localStorage.setItem(_cacheKey(version, name), JSON.stringify(entry));
       }
     } catch (e) { /* quota / privacy mode: skip caching */ }
   }
@@ -414,7 +426,7 @@
     if (!cached || !cached.detail) return true;
     if (JSON.stringify(cached.ranks || {}) !== JSON.stringify(row.ranks || {})) return true;
     if (!cached.fetchedAt || (Date.now() - cached.fetchedAt) > CACHE_TTL_MS) return true;
-    if (spec && spec.recommendSids && spec.recommendSids.map(String).indexOf(row.sid) >= 0 &&
+    if (spec && spec.recommendNames && spec.recommendNames.indexOf(row.name) >= 0 &&
         !cached.wasRecommended) return true;
     return false;
   }
@@ -462,7 +474,7 @@
     var version = spec.version || DEFAULT_VERSION;
     var base = _baseUrl(spec);
     var catRows = [];
-    var bySid = {};
+    var byName = {};
     var failures = 0;
     var aborted = false;   // set when a maintenance / login page is detected
 
@@ -479,8 +491,8 @@
         } else {
           failures = 0;
           parseCategory(html).forEach(function (r) {
-            if (!bySid[r.sid]) { bySid[r.sid] = r; catRows.push(r); }
-            else { bySid[r.sid].ranks = r.ranks; }
+            if (!byName[r.name]) { byName[r.name] = r; catRows.push(r); }
+            else { byName[r.name].ranks = r.ranks; byName[r.name].detailPath = r.detailPath; }
           });
         }
         if (aborted) return Promise.resolve();
@@ -489,31 +501,34 @@
     }
 
     // 2) Targeted detail fetches (serial, 2–3s + jitter), honouring the localStorage cache.
+    //    Each song is fetched via its own list-row href (real cat/page/index), not a
+    //    reconstructed sid URL — sid is a constant game id, not a song key.
     function fetchDetails() {
-      var queue = pickDetailQueue(catRows, spec);
+      var queue = pickDetailQueue(catRows, spec);   // [name]
       var details = {};
       var idx = 0;
       failures = 0;
       function step() {
         if (idx >= queue.length || failures >= 3) return Promise.resolve(details);
-        var sid = queue[idx++];
-        var row = bySid[sid];
-        var cached = _cacheGet(version, sid);
+        var name = queue[idx++];
+        var row = byName[name];
+        if (!row || !row.detailPath) return step();
+        var cached = _cacheGet(version, name);
         if (!_needsDetail(cached, row, spec)) {
-          details[sid] = cached.detail;
+          details[name] = cached.detail;
           return step(); // cache hit: no network, no throttle
         }
-        var url = base + 'music_detail.html?gtype=' + GTYPE + '&sid=' + sid + '&index=&cat=&page=';
+        var url = base + row.detailPath;   // exact (cat,page,index) href from the list page
         return _fetchText(url).then(function (html) {
           if (html == null) { failures += 1; }
           else {
             failures = 0;
-            var det = parseDetail(html, sid);
-            details[sid] = det;
-            _cacheSet(version, sid, {
-              ranks: row ? row.ranks : null, detail: det, fetchedAt: Date.now(),
-              wasRecommended: !!(spec.recommendSids &&
-                spec.recommendSids.map(String).indexOf(sid) >= 0),
+            var det = parseDetail(html, name);
+            details[name] = det;
+            _cacheSet(version, name, {
+              ranks: row.ranks, detail: det, fetchedAt: Date.now(),
+              wasRecommended: !!(spec.recommendNames &&
+                spec.recommendNames.indexOf(name) >= 0),
             });
           }
           return _sleep(_jitter(2000, 3000)).then(step);
@@ -530,7 +545,15 @@
                        + 'or you are not logged in. Log in, wait for the site to be up, '
                        + 'and run the bookmarklet again.' };
       }
-      return fetchDetails();
+      // Exact-detail fetching is GATED OFF by default. Verified live 2026-06-26: the
+      // music_detail page is STATE-DEPENDENT — direct deep-links (cat=N&index=M) return
+      // empty scores or redirect to /error/ unless the matching list page was just
+      // interacted with. Until that addressing is reverse-engineered we ship the reliable
+      // 37-page rank sweep only; the server's rank→achievement Bayesian prior fills in the
+      // achievement, and buildPayload emits rank-only rows. This also keeps KONAMI load
+      // minimal. Opt in with spec.fetchDetails === true once the addressing is solved.
+      if (spec.fetchDetails) return fetchDetails();
+      return {};
     }).then(function (details) {
       if (details && details.error) return details;   // pass the abort result through
       var scraped = { catRows: catRows, details: details, scrapedAt: new Date().toISOString() };

@@ -45,22 +45,28 @@ test('parseAchievement converts a percentage to a fraction', () => {
   assert.strictEqual(bm.parseAchievement(null), null);
 });
 
-// ---- parseCategory (list page: sids + per-difficulty medals) ------------------
+// ---- parseCategory (list page: names + positional index + per-difficulty medals) ----
+// NOTE: the site's `sid` param is a constant game id (not a song key); songs are keyed
+// by NAME and addressed positionally by (cat,page,index). Verified live 2026-06-26.
 
-test('parseCategory returns the right sids and rank medals', () => {
+test('parseCategory returns names, positional indices and rank medals', () => {
   const rows = bm.parseCategory(catHtml);
-  const bySid = Object.fromEntries(rows.map((r) => [r.sid, r]));
-  assert.deepStrictEqual(rows.map((r) => r.sid), ['1', '2', '5', '7']);
+  const byName = Object.fromEntries(rows.map((r) => [r.name, r]));
+  assert.deepStrictEqual(rows.map((r) => r.name),
+    ['0時20分のRoulette', '10,000,000,000', '23 -twenty three-', '3dim']);
+  // per-song key is the positional index, not sid.
+  assert.deepStrictEqual(rows.map((r) => r.index), ['0', '2', '4', '6']);
+  // detailPath carries the real (cat,page,index) href used to fetch exact data.
+  assert.ok(/[?&]index=2(?:&|$)/.test(byName['10,000,000,000'].detailPath));
 
-  // sid 1 ("0時20分のRoulette") is entirely unplayed.
-  assert.deepStrictEqual(bySid['1'].ranks, { BAS: '-', ADV: '-', EXT: '-', MAS: '-' });
-  // sid 2 ("10,000,000,000") has a B on MASTER only.
-  assert.strictEqual(bySid['2'].name, '10,000,000,000');
-  assert.strictEqual(bySid['2'].ranks.MAS, 'B');
-  assert.strictEqual(bySid['2'].ranks.EXT, '-');
-  // sid 5 has S on EXTREME; sid 7 has A on ADVANCE.
-  assert.strictEqual(bySid['5'].ranks.EXT, 'S');
-  assert.strictEqual(bySid['7'].ranks.ADV, 'A');
+  // "0時20分のRoulette" is entirely unplayed.
+  assert.deepStrictEqual(byName['0時20分のRoulette'].ranks, { BAS: '-', ADV: '-', EXT: '-', MAS: '-' });
+  // "10,000,000,000" has a B on MASTER only.
+  assert.strictEqual(byName['10,000,000,000'].ranks.MAS, 'B');
+  assert.strictEqual(byName['10,000,000,000'].ranks.EXT, '-');
+  // S on EXTREME and A on ADVANCE for the other two played songs.
+  assert.strictEqual(byName['23 -twenty three-'].ranks.EXT, 'S');
+  assert.strictEqual(byName['3dim'].ranks.ADV, 'A');
 });
 
 // ---- parseDetail (single song: 4 charts incl. exact 達成率) -------------------
@@ -72,11 +78,11 @@ test('parseDetail extracts exact achievement, rank, level and counts', () => {
   assert.ok(Math.abs(mas.achievement - 0.6515) < 1e-4);
   assert.strictEqual(mas.exact, true);
   assert.strictEqual(mas.rank, 'B');
-  assert.ok(Math.abs(mas.level - 9.4) < 1e-9);
-  assert.strictEqual(mas.playCount, 3);
-  assert.strictEqual(mas.clearCount, 1);
-  assert.strictEqual(mas.hiScore, 1234567);
-  assert.strictEqual(mas.maxCombo, 456);
+  assert.ok(Math.abs(mas.level - 9.35) < 1e-9);
+  assert.strictEqual(mas.playCount, 2);    // "2 回" -> 2 (unit stripped)
+  assert.strictEqual(mas.clearCount, 2);
+  assert.strictEqual(mas.hiScore, 435855);
+  assert.strictEqual(mas.maxCombo, 273);
 
   // Unplayed difficulties: achievement null, rank '-', not exact.
   const bas = r.charts.find((c) => c.diff === 'BAS');
@@ -91,23 +97,25 @@ test('parseDetail extracts exact achievement, rank, level and counts', () => {
 test('pickDetailQueue keeps played songs, drops unplayed, honours cap', () => {
   const rows = bm.parseCategory(catHtml);
   const q = bm.pickDetailQueue(rows, { detailCap: 10 });
-  // sid 1 (all '-') must be excluded; the three played songs included.
-  assert.ok(!q.includes('1'));
-  assert.deepStrictEqual([...q].sort(), ['2', '5', '7']);
+  // "0時20分のRoulette" (all '-') must be excluded; the three played songs included.
+  assert.ok(!q.includes('0時20分のRoulette'));
+  assert.deepStrictEqual([...q].sort(),
+    ['10,000,000,000', '23 -twenty three-', '3dim'].sort());
 });
 
 test('pickDetailQueue front-loads challenge songs and obeys the cap', () => {
   const rows = bm.parseCategory(catHtml);
-  // sid 7 (A on ADV) would otherwise rank below sid 5 (S on EXT); a challenge boost lifts it.
-  const q = bm.pickDetailQueue(rows, { detailCap: 1, challengeSids: ['7'] });
-  assert.deepStrictEqual(q, ['7']);
+  // "3dim" (A on ADV) would otherwise rank below "23 -twenty three-" (S on EXT);
+  // a challenge boost (by NAME) lifts it to the top.
+  const q = bm.pickDetailQueue(rows, { detailCap: 1, challengeNames: ['3dim'] });
+  assert.deepStrictEqual(q, ['3dim']);
 });
 
 // ---- buildPayload (schema v1; privacy) ---------------------------------------
 
 test('buildPayload emits a schema-v1 payload from scraped data', () => {
   const rows = bm.parseCategory(catHtml);
-  const details = { 2: bm.parseDetail(detailHtml, '2') };
+  const details = { '10,000,000,000': bm.parseDetail(detailHtml, '10,000,000,000') };
   const profile = {
     gitadoraId: 'HG12B7108F', playerName: 'LASK',
     drumSkillPoint: 7530.40, allSongSkill: 24020.46,
@@ -136,12 +144,12 @@ test('buildPayload emits a schema-v1 payload from scraped data', () => {
   assert.ok(!flat.includes('must-not-leak'));
 
   // The MASTER chart is exact (from the detail page); unplayed diffs are dropped.
-  const masters = p.charts.filter((c) => c.sid === '2' && c.diff === 'MAS');
+  const masters = p.charts.filter((c) => c.name === '10,000,000,000' && c.diff === 'MAS');
   assert.strictEqual(masters.length, 1);
   const m = masters[0];
   assert.strictEqual(m.exact, true);
   assert.ok(Math.abs(m.achievement - 0.6515) < 1e-4);
-  assert.ok(Math.abs(m.level - 9.4) < 1e-9);
+  assert.ok(Math.abs(m.level - 9.35) < 1e-9);
   assert.strictEqual(m.rank, 'B');
   // No unplayed ('-') rows leak into the payload.
   assert.ok(p.charts.every((c) => c.rank !== '-'));
@@ -157,13 +165,14 @@ test('buildPayload emits a schema-v1 payload from scraped data', () => {
 test('buildPayload attaches catalog levels to rank-only charts', () => {
   // A song played on EXTREME (S medal) but never detail-fetched: level must come
   // from the upload spec's catalog so the row still validates server-side.
-  const rows = [{ sid: '5', name: '23 -twenty three-',
-                  ranks: { BAS: '-', ADV: '-', EXT: 'S', MAS: '-' } }];
+  const rows = [{ index: '4', name: '23 -twenty three-',
+                  ranks: { BAS: '-', ADV: '-', EXT: 'S', MAS: '-' },
+                  detailPath: 'music_detail.html?gtype=dm&sid=2&cat=0&page=1&index=4' }];
   const scraped = { catRows: rows, details: {}, scrapedAt: '2026-06-26T00:00:00Z' };
   const spec = { version: 'galaxywave_delta', gsvPlayerId: 7,
-                 catalog: { 5: { levels: { EXT: 7.30 } } } };
+                 catalog: { '23 -twenty three-': { levels: { EXT: 7.30 } } } };
   const p = bm.buildPayload({ playerName: 'X' }, scraped, spec);
-  const ext = p.charts.find((c) => c.sid === '5' && c.diff === 'EXT');
+  const ext = p.charts.find((c) => c.name === '23 -twenty three-' && c.diff === 'EXT');
   assert.ok(ext);
   assert.strictEqual(ext.exact, false);
   assert.strictEqual(ext.achievement, null);
