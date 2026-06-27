@@ -91,6 +91,27 @@ a:hover { text-decoration: underline; }
 .langsel .langbtn:hover { color: var(--ink); }
 .langsel .langbtn.on { background: var(--brass); color: #0b0f1a; font-weight: 700; }
 
+/* top-right control cluster: instrument switcher + GitHub issues + language */
+.topctl { margin-left: auto; display: inline-flex; align-items: center; gap: 10px; }
+.topctl .langsel { margin-left: 0; }
+.instsel { display: inline-flex; gap: 2px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 999px; padding: 2px; }
+.instsel:empty { display: none; }
+.instsel .instbtn {
+  font-family: var(--mono); font-size: 11px; letter-spacing: .04em; color: var(--muted);
+  background: transparent; border: none; border-radius: 999px; padding: 4px 10px; cursor: pointer;
+}
+.instsel .instbtn:hover { color: var(--ink); }
+.instsel .instbtn.on { background: var(--teal); color: #0b0f1a; font-weight: 700; }
+.ghlink { display: inline-flex; align-items: center; color: var(--muted); transition: color .15s; }
+.ghlink:hover { color: var(--ink); }
+
+/* GuitarFreaks guitar (G) / bass (B) part badge */
+.parttag { font-family: var(--mono); font-size: 9px; font-weight: 700; letter-spacing: .04em;
+  padding: 1px 4px; border-radius: 3px; vertical-align: middle; }
+.parttag.p-G { background: rgba(52,220,201,.18); color: var(--teal); }
+.parttag.p-B { background: rgba(176,140,255,.20); color: #b08cff; }
+
 .search-wrap { position: relative; width: min(300px, 38vw); }
 .search-wrap input {
   width: 100%; padding: 9px 12px 9px 34px;

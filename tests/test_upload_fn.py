@@ -48,7 +48,7 @@ def _base_payload():
 
 
 def _write_players(tmp_path, players):
-    proc = os.path.join(str(tmp_path), "processed", VERSION)
+    proc = os.path.join(str(tmp_path), "processed", VERSION, "drum")
     os.makedirs(proc, exist_ok=True)
     with open(os.path.join(proc, "players.json"), "w", encoding="utf-8") as fh:
         json.dump(players, fh)

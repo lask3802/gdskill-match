@@ -96,7 +96,7 @@ def _reload(tmp_path, monkeypatch, players=None):
             {"id": 0, "playerId": 1, "name": "LASK", "sp": 7530.40},
             {"id": 1, "playerId": 2, "name": "Other", "sp": 1000.0},
         ]
-    proc = os.path.join(str(tmp_path), "processed", "galaxywave_delta")
+    proc = os.path.join(str(tmp_path), "processed", "galaxywave_delta", "drum")
     os.makedirs(proc, exist_ok=True)
     with open(os.path.join(proc, "players.json"), "w", encoding="utf-8") as fh:
         json.dump(players, fh)

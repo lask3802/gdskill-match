@@ -9,7 +9,8 @@ const fmt = (n, d = 0) => (n == null ? "—" : Number(n).toLocaleString("en-US",
 // percentages at source precision (achievement is recorded to 2 decimals, e.g. 97.54%)
 const pct = n => (n == null ? "—" : (n * 100).toFixed(2) + "%");
 
-const ytLink = name => `https://www.youtube.com/results?search_query=${encodeURIComponent("GITADORA DRUMMANIA " + name)}`;
+const YT_TERM = { drum: "GITADORA DRUMMANIA", guitar: "GITADORA GUITARFREAKS" };
+const ytLink = name => `https://www.youtube.com/results?search_query=${encodeURIComponent((YT_TERM[INST] || YT_TERM.drum) + " " + name)}`;
 const EXT_ICON = `<svg class="exti" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3h7v7"/><path d="M21 3l-9 9"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/></svg>`;
 const ytLinkEl = name => `<a class="ytlink" href="${ytLink(name)}" target="_blank" rel="noopener">Youtube ${EXT_ICON}</a>`;
 
@@ -32,6 +33,9 @@ const DIFF_COLOR = { BAS: "#1ca0e6", ADV: "#f2a01c", EXT: "#e62832", MAS: "#9b3f
 const diffColor = d => DIFF_COLOR[d] || "#5b6478";
 const LV = x => (x == null ? "—" : Number(x).toFixed(2));
 const lvtag = (diff, level) => `<span class="lvtag" style="color:${diffColor(diff)}">${diff} Lv${LV(level)}</span>`;
+// GuitarFreaks: tag guitar (G) / bass (B) charts so identically-named songs are
+// distinguishable. DrumMania charts are single-part ("D") → no badge.
+const partTag = p => (p === "G" || p === "B") ? ` <span class="parttag p-${p}">${p}</span>` : "";
 
 // GITADORA skill-tier colours (gsv scheme): tier = floor(SP / 500)
 function gdTier(sp) { return Math.max(0, Math.min(20, Math.floor((sp || 0) / 500))); }
@@ -69,6 +73,17 @@ const TAG_KEY = { popular: "tagPopular", highGain: "tagHighGain", efficient: "ta
 /* ---------------- state ---------------- */
 let META = null;
 let CURRENT_ID = null;
+// Selected instrument (drum | guitar). Default drum; persisted in localStorage
+// and reflected in the ?inst= URL param. Every API call carries it via withInst().
+let INST = "drum";
+function loadInst() { try { return localStorage.getItem("gd_inst"); } catch (e) { return null; } }
+function saveInst(v) { try { localStorage.setItem("gd_inst", v); } catch (e) { /* ignore */ } }
+function instName(code) { return t(code === "guitar" ? "instGuitar" : "instDrum"); }
+// Append the selected instrument to an API path (default drum is harmless/explicit).
+function withInst(path) {
+  const sep = path.includes("?") ? "&" : "?";
+  return `${path}${sep}inst=${encodeURIComponent(INST)}`;
+}
 
 /* Overlay share tokens (spec §9): the owner's one-time token, kept in
    localStorage keyed by the player's internal id so we can (a) request the
@@ -97,11 +112,15 @@ function twDate(builtAt) {
 
 function applyStatic() {
   document.documentElement.lang = getLang() === "zh" ? "zh-Hant" : getLang();
-  document.title = t("docTitle");
+  document.title = t("docTitle", { inst: instName(INST) });
   const inp = $("#search"); if (inp) inp.placeholder = t("searchPlaceholder");
   document.querySelectorAll("[data-i18n]").forEach(e => { e.textContent = t(e.dataset.i18n); });
+  const gh = $("#ghlink"); if (gh) gh.title = t("ghIssuesTitle");
+  // Upload is DrumMania-only this round — hide its nav link for other instruments.
+  const upNav = document.querySelector('.subnav a[href="#upload"]');
+  if (upNav) upNav.style.display = INST === "drum" ? "" : "none";
   if (META) {
-    $("#metaSub").textContent = t("metaSub", { version: META.versionName, players: fmt(META.players), charts: fmt(META.charts) });
+    $("#metaSub").textContent = t("metaSub", { inst: instName(META.instrument || INST), version: META.versionName, players: fmt(META.players), charts: fmt(META.charts) });
     if (META.builtAt) $("#dataDate").textContent = t("dataUpdated", { date: twDate(META.builtAt) });
   }
 }
@@ -120,23 +139,65 @@ function changeLang(l) {
   setLang(l);
   applyStatic();
   renderLangSel();
+  renderInstSel();
   closeModal();
   if (CURRENT_ID != null) loadPlayer(CURRENT_ID); else loadDefault();
 }
 
+const INST_SHORT = { drum: "DM", guitar: "GF" };
+function renderInstSel() {
+  const box = $("#instsel");
+  if (!box) return;
+  const insts = (META && META.instruments) || ["drum"];
+  // Only show the switcher when more than one instrument is actually built.
+  if (insts.length < 2) { box.innerHTML = ""; return; }
+  box.title = t("instSwitchTitle");
+  box.innerHTML = insts.map(code =>
+    `<button class="instbtn ${code === INST ? "on" : ""}" data-i="${esc(code)}" title="${esc(instName(code))}">${INST_SHORT[code] || code.toUpperCase()}</button>`).join("");
+  box.querySelectorAll(".instbtn").forEach(b => { b.onclick = () => changeInst(b.dataset.i); });
+}
+
+async function fetchMeta() {
+  // INST must already be set to the desired instrument before calling.
+  try { return await api(withInst("/api/meta")); }
+  catch (e) { INST = "drum"; return await api("/api/meta"); }
+}
+
+async function changeInst(code) {
+  if (code === INST) return;
+  INST = code;
+  saveInst(code);
+  const url = new URL(location.href);
+  url.searchParams.set("inst", code);
+  url.searchParams.delete("p");   // player ids do not map across instruments
+  history.replaceState(null, "", url.search);
+  META = await fetchMeta();
+  INST = META.instrument || code;
+  applyStatic();
+  renderInstSel();
+  closeModal();
+  CURRENT_ID = null;
+  loadDefault();
+}
+
 async function boot() {
-  META = await api("/api/meta");
+  const url = new URL(location.href);
+  INST = url.searchParams.get("inst") || loadInst() || "drum";
+  META = await fetchMeta();
+  INST = META.instrument || "drum";
+  saveInst(INST);
   applyStatic();
   renderLangSel();
+  renderInstSel();
   setupSearch();
   $("#brand").onclick = () => loadDefault();
-  const pid = new URL(location.href).searchParams.get("p");
+  const pid = url.searchParams.get("p");
   if (pid != null) return loadPlayer(+pid);
   loadDefault();
 }
 
 async function loadDefault() {
-  const r = await api("/api/top");
+  const r = await api(withInst("/api/top"));
   if (r.results && r.results.length) loadPlayer(r.results[0].id);
 }
 
@@ -150,7 +211,7 @@ function setupSearch() {
     const q = inp.value.trim();
     if (!q) { close(); return; }
     timer = setTimeout(async () => {
-      const r = await api("/api/search?q=" + encodeURIComponent(q));
+      const r = await api(withInst("/api/search?q=" + encodeURIComponent(q)));
       box.innerHTML = "";
       if (!r.results.length) box.innerHTML = `<div class="row"><span class="nm" style="color:var(--dim)">${t("noPlayer")}</span></div>`;
       r.results.forEach(p => {
@@ -180,7 +241,7 @@ async function loadPlayer(id) {
   const token = urlToken || (stored && stored.token);
   const q = token ? `?token=${encodeURIComponent(token)}` : "";
   let data;
-  try { data = await api(`/api/player/${id}/all${q}`); }
+  try { data = await api(withInst(`/api/player/${id}/all${q}`)); }
   catch (e) { app.innerHTML = `<div class="empty">${t("loadFail", { msg: esc(e.message) })}</div>`; return; }
   // Persist/refresh the token (carry the gsvPlayerId the publish route needs);
   // keep the token out of the visible address bar.
@@ -188,13 +249,14 @@ async function loadPlayer(id) {
     saveToken(id, { token, gsvPlayerId: data.profile.player.playerId,
                     visibility: data.profile.visibility || (stored && stored.visibility) || "private" });
   }
-  history.replaceState(null, "", `?p=${id}`);
+  history.replaceState(null, "", INST === "drum" ? `?p=${id}` : `?p=${id}&inst=${INST}`);
   app.innerHTML = "";
   app.appendChild(renderHero(data.profile));
   app.appendChild(renderSimilar(data.similar, data.profile));
   app.appendChild(renderRivals(data.rivals, data.profile));
   app.appendChild(renderSongs(data.songs, data.profile));
-  app.appendChild(renderUpload(data.profile));
+  // Full-data upload is DrumMania-only this round.
+  if (INST === "drum") app.appendChild(renderUpload(data.profile));
 }
 
 /* ---------------- hero / profile ---------------- */
@@ -271,11 +333,11 @@ function padGrid(list) {
     pad.style.background = zColor(c.z);
     pad.setAttribute("role", "button");
     pad.setAttribute("tabindex", "0");
-    pad.innerHTML = `<span class="plv" style="color:${diffColor(c.diff)}">Lv${LV(c.level)} ${c.diff}</span>
+    pad.innerHTML = `<span class="plv" style="color:${diffColor(c.diff)}">Lv${LV(c.level)} ${c.diff}${partTag(c.part)}</span>
       <span class="pnm">${esc(c.name)}</span>
       <b class="pskill">${fmt(c.skill,2)}</b>
       <span class="pmeta">${pct(c.ach)}</span>
-      <div class="tip"><div class="nm">${esc(c.name)}</div>
+      <div class="tip"><div class="nm">${esc(c.name)}${partTag(c.part)}</div>
         <div class="kv"><span style="color:${diffColor(c.diff)}">${t("padTipDiff", { diffFull: c.diffFull, level: LV(c.level), pool: c.pool.toUpperCase() })}</span></div>
         <div class="kv">${t("padTipSkill", { skill: fmt(c.skill,2), ach: pct(c.ach) })}</div>
         <div class="kv">${t("padTipZ", { z: c.z == null ? "—" : c.z, near: c.nearPeers == null ? "—" : c.nearPeers, count: c.count })}</div>
@@ -305,14 +367,14 @@ function renderHist(hist) {
 function renderSignature(sig) {
   if (!sig || !sig.length) return "";
   const items = sig.slice(0, 8).map(c =>
-    `<div class="li"><span class="s">${esc(c.name)} ${lvtag(c.diff, c.level)}</span>
+    `<div class="li"><span class="s">${esc(c.name)}${partTag(c.part)} ${lvtag(c.diff, c.level)}</span>
       <span class="vs"><span class="a">z ${c.z}</span> · ${pct(c.ach)}</span></div>`).join("");
   return `<div class="mini"><div class="mt">${t("signatureTitle")} ${help(t("zShort"))}</div>${items}</div>`;
 }
 function renderImprove(list) {
   if (!list || !list.length) return "";
   const items = list.slice(0, 6).map(c =>
-    `<div class="li"><span class="s">${esc(c.name)} ${lvtag(c.diff, c.level)}</span>
+    `<div class="li"><span class="s">${esc(c.name)}${partTag(c.part)} ${lvtag(c.diff, c.level)}</span>
       <span class="vs"><span style="color:var(--coral)">z ${c.z}</span> · ${pct(c.ach)}</span></div>`).join("");
   return `<div class="mini"><div class="mt">${t("improveTitle")} ${help(t("zShort"))}</div>${items}</div>`;
 }
@@ -345,10 +407,10 @@ function simBar(name, cls, v) {
 function similarCard(s) {
   const c = el("div", "card");
   const shared = (s.sharedHighlights || []).map(h =>
-    `<div class="li"><span class="s">${esc(h.name)} ${lvtag(h.diff, h.level)}</span>
+    `<div class="li"><span class="s">${esc(h.name)}${partTag(h.part)} ${lvtag(h.diff, h.level)}</span>
       <span class="vs"><span class="a">${fmt(h.yours,2)}</span> / <span class="b">${fmt(h.theirs,2)}</span></span></div>`).join("");
   const learn = (s.learnFrom || []).map(h =>
-    `<div class="li"><span class="s">${esc(h.name)} ${lvtag(h.diff, h.level)}</span>
+    `<div class="li"><span class="s">${esc(h.name)}${partTag(h.part)} ${lvtag(h.diff, h.level)}</span>
       <span class="tag ${h.pool}">${h.pool.toUpperCase()}</span></div>`).join("");
   c.innerHTML = `
     <div class="top"><span class="nm">${pnameLink(s)}</span>${pspan(s.sp)}</div>
@@ -403,7 +465,7 @@ function rivalCard(r) {
   return c;
 }
 function h2hLine(h, cls) {
-  return `<div class="li ${cls}"><span class="s">${esc(h.name)} ${lvtag(h.diff, h.level)}</span>
+  return `<div class="li ${cls}"><span class="s">${esc(h.name)}${partTag(h.part)} ${lvtag(h.diff, h.level)}</span>
     <span class="vs"><span class="a">${fmt(h.yours,2)}</span>/<span class="b">${fmt(h.theirs,2)}</span> <span class="delta">${h.delta>=0?"+":""}${fmt(h.delta,2)}</span></span></div>`;
 }
 
@@ -484,7 +546,7 @@ function enhancedSongRow(c, kind) {
       <span class="n">${LV(c.level)}</span><span class="d">${c.diff}</span>
     </div>
     <div class="body">
-      <div class="nm"><span class="snm">${esc(c.name)}</span>
+      <div class="nm"><span class="snm">${esc(c.name)}</span>${partTag(c.part)}
         <span class="tag ${c.pool}">${c.pool.toUpperCase()}</span>
         ${obsTag}
         ${ytLinkEl(c.name)}</div>
@@ -523,7 +585,7 @@ function songRow(c, kind) {
       <span class="n">${LV(c.level)}</span><span class="d">${c.diff}</span>
     </div>
     <div class="body">
-      <div class="nm"><span class="snm">${esc(c.name)}</span>
+      <div class="nm"><span class="snm">${esc(c.name)}</span>${partTag(c.part)}
         <span class="tag ${c.pool}">${c.pool.toUpperCase()}</span>
         ${ytLinkEl(c.name)}</div>
       <div class="why">${esc(songWhy(c, kind))}</div>
@@ -547,7 +609,7 @@ function closeModal() {
 async function openChart(chartId) {
   if (CURRENT_ID == null) return;
   let d;
-  try { d = await api(`/api/player/${CURRENT_ID}/chart/${chartId}`); }
+  try { d = await api(withInst(`/api/player/${CURRENT_ID}/chart/${chartId}`)); }
   catch (e) { return; }
   renderChartModal(d);
 }
@@ -593,7 +655,7 @@ function renderChartModal(d) {
     <button class="mclose" aria-label="${t("close")}">✕</button>
     <div class="mhead">
       <span class="mbadge" style="background:${diffColor(ch.diff)}">${LV(ch.level)}<small>${ch.diff}</small></span>
-      <div class="mht"><div class="mtitle">${esc(ch.name)}</div>
+      <div class="mht"><div class="mtitle">${esc(ch.name)}${partTag(ch.part)}</div>
         <div class="msub"><span style="color:${diffColor(ch.diff)};font-weight:600">${ch.diffFull} · Lv${LV(ch.level)}</span> · <span class="tag ${ch.pool}">${ch.pool.toUpperCase()}</span> · ${t("globalHolders", { n: fmt(ch.globalHolders) })}
           · ${ytLinkEl(ch.name)}</div></div>
     </div>

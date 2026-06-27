@@ -1,8 +1,12 @@
-# GD Skill Match — GITADORA DrumMania 技能配對與選曲推薦
+# GD Skill Match — GITADORA DrumMania / GuitarFreaks 技能配對與選曲推薦
 
 **線上版**：<https://gdskill-43090965539.asia-east1.run.app>（GCP Cloud Run，每日自動更新資料）
 
-一個 web application：輸入任一位 GITADORA **DrumMania** 玩家，工具會用統計方法
+支援兩種曲種：**DrumMania** 與 **GuitarFreaks**，右上角可一鍵切換（DM ⇄ GF）。
+GuitarFreaks 沿用與 DrumMania **完全相同**的方法，差別只在於 GF 的吉他（G）與貝斯（B）
+譜面為各自獨立的譜面（GF 技能橫跨兩者），以 `(曲名, 難度, part)` 作為譜面識別。
+
+一個 web application：輸入任一位 GITADORA 玩家，工具會用統計方法
 
 1. **定位玩家** — 分析他「擅長什麼」（相對**同分數段**玩家的強弱指紋，越級曲也以同段位為基準）。
 2. **找出相似玩家** — 依「選曲口味 + 演奏強弱模式」找出風格最接近的人（與總分高低無關）。
@@ -44,7 +48,17 @@ pip install -r requirements.txt
 之後即離線可用。爬下來的第三方玩家資料不隨 repo 散布（已 gitignore）。若要更新到最新資料：
 
 ```powershell
-./run.ps1 -Fetch          # 重新從 gsv.fun 抓取 + 重建
+./run.ps1 -Fetch                      # 重新從 gsv.fun 抓取 + 重建（DrumMania）
+./run.ps1 -Instrument guitar -Fetch   # 抓取 + 建立 GuitarFreaks 資料（gsv type:g）
+```
+
+伺服器會自動提供所有「已建好」的曲種；兩種都建好後，頁面右上角才會出現 DM⇄GF 切換鈕。
+沒有 gsv 連線也想預覽介面時，可用合成示範資料：
+
+```powershell
+python pipeline/make_demo.py --version demo --instrument drum
+python pipeline/make_demo.py --version demo --instrument guitar
+python server/app.py --version demo    # 開 http://127.0.0.1:8770/ ，右上可切 DM⇄GF
 ```
 
 ---
@@ -97,21 +111,24 @@ pip install -r requirements.txt
 ```
 gdskill-match/
 ├─ pipeline/
-│  ├─ fetch_data.py      # 從 gsv.fun GraphQL 抓玩家清單 + 技能帳 + kasegi（純標準庫、可續傳）
-│  └─ build_dataset.py   # 建譜面目錄、player×chart 矩陣、per-chart 統計、SVD 嵌入 → artifacts
+│  ├─ fetch_data.py      # 從 gsv.fun GraphQL 抓玩家清單 + 技能帳 + kasegi（--instrument drum|guitar）
+│  ├─ build_dataset.py   # 建譜面目錄、player×chart 矩陣、per-chart 統計、SVD 嵌入（--instrument）
+│  └─ make_demo.py       # 合成離線示範資料（無需連 gsv，可預覽 UI 與 DM⇄GF 切換）
 ├─ server/
-│  ├─ engine.py          # 推薦引擎：相似度 / 對手 / 選曲（numpy）
+│  ├─ engine.py          # 推薦引擎：相似度 / 對手 / 選曲（numpy；依 instrument 載入對應資料）
 │  └─ app.py             # 零依賴 HTTP 伺服器（http.server）：JSON API + 靜態前端
-├─ web/                  # 前端 SPA（原生 JS，無建置步驟）
-│  ├─ index.html  styles.css  app.js
+├─ web/                  # 前端 SPA（原生 JS，無建置步驟；含 DM⇄GF 切換 + GitHub issue 入口）
+│  ├─ index.html  styles.css  app.js  i18n.js
 ├─ data/
-│  ├─ raw/               # 抓下來的原始資料
-│  └─ processed/<ver>/   # charts.json / players.json / matrix.npz / kasegi.json / meta.json
+│  ├─ raw/                          # players_<instrument>_<ver>.jsonl / kasegi_<instrument>_<ver>.json
+│  └─ processed/<ver>/<instrument>/ # charts.json / players.json / matrix.npz / kasegi.json / meta.json
 ├─ run.ps1  run.sh  requirements.txt
 ```
 
-API（`http://127.0.0.1:8770/api/...`）：
-`GET /api/meta`、`/api/search?q=`、`/api/top`、
+曲種以 `instrument`（`drum` / `guitar`）參數貫穿整個技術棧；`drum` 為預設，現有行為不變。
+
+API（`http://127.0.0.1:8770/api/...`）：所有端點接受 `?inst=drum|guitar`（預設 drum）。
+`GET /api/meta`（回傳 `instrument` 與可用的 `instruments`）、`/api/search?q=`、`/api/top`、
 `/api/player/<id>/{profile|similar|rivals|songs|all}`。
 
 ---
@@ -179,9 +196,22 @@ PROJECT_ID=your-project BILLING_ACCOUNT=XXXXXX-XXXXXX-XXXXXX ./deploy.sh
 `Dockerfile`（Cloud Run 服務）、`updater/`（排程函式，含 pipeline 副本）、`server/cloudstore.py`
 （GCS 同步）、`deploy.sh` 為部署相關檔案。低流量下幾乎落在免費額度；詳見 [`docs/deployment.md`](docs/deployment.md)。
 
+雲端要同時提供 GuitarFreaks，於 Cloud Run 與 updater 設環境變數 `GD_INSTRUMENTS=drum,guitar`
+（預設 `drum`）；排程 updater 會每日重建並上傳每個曲種的分析檔。
+
+## 隱私與安全
+
+本 repo 為**公開**，且刻意不含任何金鑰／密碼／權杖／GCP 專案或服務帳號識別碼——`deploy.sh`
+一律從環境變數讀取帳號設定。第三方玩家資料與所有衍生檔（含上傳 overlay）都在 `data/`／
+`userdata/` 之下，已 gitignore，不隨 repo 散布。公開服務僅有唯讀 `GET`；上傳路由預設關閉。
+上傳**絕不**存取或傳輸卡號／cookie／原始 HTML，且預設私有。詳見 [`SECURITY.md`](SECURITY.md)
+（含漏洞回報方式）。頁面右上角的 GitHub icon 可直接開 issue 回報問題或建議。
+
 ## 限制與備註
 
 - 只涵蓋有上傳到 gsv.fun 的玩家，非全體 GITADORA 玩家。
 - 技能帳是「最強 50 曲」截尾資料；強項與推薦都是相對於此截尾母體。
 - 提升總分的達成率為**估計值**，實際表現因人而異；信心度低的推薦請當作參考。
-- 目前聚焦 **DrumMania**；引擎與資料管線已參數化版本與曲種，未來可延伸到 GuitarFreaks。
+- **DrumMania** 與 **GuitarFreaks** 皆已支援（右上角切換）。完整資料**上傳**目前僅支援
+  DrumMania（書籤工具抓 e-amusement 的 `gtype=dm`）；GuitarFreaks 提供完整的唯讀分析
+  （個人頁／相似玩家／對手／選曲）。

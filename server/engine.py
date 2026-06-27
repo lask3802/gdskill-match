@@ -53,6 +53,9 @@ from server import userstore  # noqa: E402
 
 DIFF_FULL = {"BAS": "BASIC", "ADV": "ADVANCED", "EXT": "EXTREME", "MAS": "MASTER"}
 
+# gsv profile path suffix per instrument (…/<version>/<playerId>/<suffix>).
+GSV_TYPE = {"drum": "d", "guitar": "g"}
+
 
 def _safe_norm(mat, axis=1):
     n = np.linalg.norm(mat, axis=axis, keepdims=True)
@@ -61,9 +64,10 @@ def _safe_norm(mat, axis=1):
 
 
 class Engine:
-    def __init__(self, version="galaxywave_delta"):
+    def __init__(self, version="galaxywave_delta", instrument="drum"):
         self.version = version
-        d = os.path.join(PROC_DIR, version)
+        self.instrument = instrument
+        d = os.path.join(PROC_DIR, version, instrument)
         with open(os.path.join(d, "charts.json"), encoding="utf-8") as f:
             self.charts = json.load(f)
         with open(os.path.join(d, "players.json"), encoding="utf-8") as f:
@@ -107,9 +111,12 @@ class Engine:
         for p in self.players:
             self._by_lower.setdefault((p["name"] or "").lower(), []).append(p["id"])
 
-        # (name, diff) -> chart index, for projecting an upload overlay onto the
-        # base catalog; and a per-player overlay cache (lazy, owner/visibility-gated).
-        self._chart_index = {(c["name"], c["diff"]): i for i, c in enumerate(self.charts)}
+        # chart identity -> index, for projecting an upload overlay onto the base
+        # catalog and for kasegi lookups; and a per-player overlay cache (lazy,
+        # owner/visibility-gated). DrumMania keys on (name, diff); GuitarFreaks
+        # keys on (name, diff, part) so a song's guitar and bass charts stay
+        # distinct (see `_ckey`).
+        self._chart_index = {self._ckey(c): i for i, c in enumerate(self.charts)}
         self._overlay_cache = {}
 
         self.kasegi_by_scope = {}
@@ -117,8 +124,16 @@ class Engine:
             m = {}
             for pool in ("hot", "other"):
                 for rec in (k.get(pool) or []):
-                    m[(rec["name"], rec["diff"])] = rec
+                    m[self._ckey(rec)] = rec
             self.kasegi_by_scope[k["scope"]] = m
+
+    def _ckey(self, rec):
+        """Chart identity tuple. DrumMania is single-part so it keys on
+        (name, diff) — identical to the historical catalog; GuitarFreaks adds the
+        part (G / B) so guitar and bass charts of one song are distinct."""
+        if self.instrument == "drum":
+            return (rec["name"], rec["diff"])
+        return (rec["name"], rec["diff"], rec.get("part"))
 
     # ---------------- lookups ----------------
     def find_players(self, query, limit=25):
@@ -144,7 +159,8 @@ class Engine:
         }
 
     def _gsv_url(self, player_id):
-        return f"http://gsv.fun/en/{self.version}/{player_id}/d"
+        suffix = GSV_TYPE.get(self.instrument, "d")
+        return f"http://gsv.fun/en/{self.version}/{player_id}/{suffix}"
 
     # ---------------- similarity signals ----------------
     def _signals(self, i):
@@ -202,7 +218,13 @@ class Engine:
                 self._overlay_cache.pop(idx, None)
 
     def _load_overlay(self, i):
-        """Build and cache `(Overlay, visibility)` for player i, or None."""
+        """Build and cache `(Overlay, visibility)` for player i, or None.
+
+        Full-data uploads are DrumMania-only this round (the e-amusement
+        bookmarklet scrapes gtype=dm), so other instruments never carry an
+        overlay — short-circuit to base behaviour."""
+        if self.instrument != "drum":
+            return None
         try:
             latest = userstore.get_latest(self.version, self.players[i]["playerId"])
         except Exception:  # noqa: BLE001 — overlay must never break base behaviour
@@ -332,7 +354,7 @@ class Engine:
         kmap = self.kasegi_by_scope.get(kscope, {})
         efficient = [self._cd(i, ci, z=wz(ci), near=int(near[ci])) for ci in
                      sorted(held, key=lambda ci: -self.chart_count[ci])
-                     if (self.charts[ci]["name"], self.charts[ci]["diff"]) in kmap][:8]
+                     if self._ckey(self.charts[ci]) in kmap][:8]
 
         # full skill sheet split by pool, sorted by skill desc — feeds the pad grid
         hot_ids = [ci for ci in held if self.pool_is_hot[ci]]
@@ -430,7 +452,7 @@ class Engine:
         c = self.charts[ci]
         kind = int(ov.obs_kind[ci])
         return {
-            "id": int(ci), "name": c["name"], "diff": c["diff"],
+            "id": int(ci), "name": c["name"], "diff": c["diff"], "part": c.get("part"),
             "diffFull": DIFF_FULL.get(c["diff"], c["diff"]),
             "level": c["level"], "pool": c["pool"], "count": int(c["count"]),
             "skill": round(float(ov.skill_mean[ci]), 2),
@@ -450,7 +472,7 @@ class Engine:
         c = self.charts[ci]
         present = bool(self.presence[i, ci])
         return {
-            "id": int(ci), "name": c["name"], "diff": c["diff"],
+            "id": int(ci), "name": c["name"], "diff": c["diff"], "part": c.get("part"),
             "diffFull": DIFF_FULL.get(c["diff"], c["diff"]),
             "level": c["level"], "pool": c["pool"], "count": int(c["count"]),
             "skill": round(float(self.skill[i, ci]), 2) if present else None,
@@ -526,7 +548,7 @@ class Engine:
 
         return {
             "chart": {
-                "id": ci, "name": c["name"], "diff": c["diff"],
+                "id": ci, "name": c["name"], "diff": c["diff"], "part": c.get("part"),
                 "diffFull": DIFF_FULL.get(c["diff"], c["diff"]),
                 "level": c["level"], "pool": c["pool"], "globalHolders": int(c["count"]),
             },
@@ -571,6 +593,7 @@ class Engine:
         both = np.where(pres_i & (self.presence[j] > 0) & self.support_mask)[0]
         both = sorted(both, key=lambda ci: -(skill_i[ci] + self.skill[j, ci]))[:n]
         return [{"name": self.charts[ci]["name"], "diff": self.charts[ci]["diff"],
+                 "part": self.charts[ci].get("part"),
                  "level": self.charts[ci]["level"],
                  "yours": round(float(skill_i[ci]), 2),
                  "theirs": round(float(self.skill[j, ci]), 2)} for ci in both]
@@ -581,6 +604,7 @@ class Engine:
         only_j = np.where((self.presence[j] > 0) & (~pres_i))[0]
         only_j = sorted(only_j, key=lambda ci: -self.skill[j, ci])[:n]
         return [{"name": self.charts[ci]["name"], "diff": self.charts[ci]["diff"],
+                 "part": self.charts[ci].get("part"),
                  "level": self.charts[ci]["level"], "pool": self.charts[ci]["pool"],
                  "theirs": round(float(self.skill[j, ci]), 2)} for ci in only_j]
 
@@ -646,6 +670,7 @@ class Engine:
             if (win and d <= 0) or (not win and d >= 0):
                 continue
             res.append({"name": self.charts[ci]["name"], "diff": self.charts[ci]["diff"],
+                        "part": self.charts[ci].get("part"),
                         "level": self.charts[ci]["level"],
                         "yours": round(float(self.skill[i, ci]), 2),
                         "theirs": round(float(self.skill[j, ci]), 2),
@@ -674,7 +699,7 @@ class Engine:
                 w = np.exp(-(np.abs(self.sp[near] - sp_i) / 350.0) ** 2)
                 parts.append(float((self.ach[near, ci] * w).sum() / max(w.sum(), 1e-6)))
                 weights.append(min(1.0, len(near) / 12.0) * 1.0)
-        krec = kmap.get((self.charts[ci]["name"], self.charts[ci]["diff"]))
+        krec = kmap.get(self._ckey(self.charts[ci]))
         if krec and krec.get("averageSkill") and self.levels[ci] > 0:
             ka = float(krec["averageSkill"]) / (self.levels[ci] * 20.0)
             parts.append(min(ka, 1.0))
@@ -722,9 +747,10 @@ class Engine:
             pool = "hot" if self.pool_is_hot[ci] else "other"
             cutoff = p["hotCutoff"] if pool == "hot" else p["otherCutoff"]
             gain = est_skill - cutoff
-            krec = kmap.get((self.charts[ci]["name"], self.charts[ci]["diff"]))
+            krec = kmap.get(self._ckey(self.charts[ci]))
             cand.append({
                 "id": int(ci), "name": self.charts[ci]["name"], "diff": self.charts[ci]["diff"],
+                "part": self.charts[ci].get("part"),
                 "diffFull": DIFF_FULL.get(self.charts[ci]["diff"], self.charts[ci]["diff"]),
                 "level": round(lv, 2), "pool": pool, "count": int(self.chart_count[ci]),
                 "neighborHolders": int(ncol[ci]), "neighborTotal": len(nbr),
@@ -831,9 +857,10 @@ class Engine:
             est_skill = lv * 20.0 * est_ach
             pool = "hot" if self.pool_is_hot[ci] else "other"
             cutoff = cutoff_for(ci)
-            krec = kmap.get((self.charts[ci]["name"], self.charts[ci]["diff"]))
+            krec = kmap.get(self._ckey(self.charts[ci]))
             disc.append({
                 "id": int(ci), "name": self.charts[ci]["name"], "diff": self.charts[ci]["diff"],
+                "part": self.charts[ci].get("part"),
                 "diffFull": DIFF_FULL.get(self.charts[ci]["diff"], self.charts[ci]["diff"]),
                 "level": round(lv, 2), "pool": pool, "count": int(self.chart_count[ci]),
                 "neighborHolders": int(ncol[ci]), "neighborTotal": len(nbr),
@@ -872,6 +899,7 @@ class Engine:
             pool = "hot" if self.pool_is_hot[ci] else "other"
             practice.append({
                 "id": int(ci), "name": self.charts[ci]["name"], "diff": self.charts[ci]["diff"],
+                "part": self.charts[ci].get("part"),
                 "diffFull": DIFF_FULL.get(self.charts[ci]["diff"], self.charts[ci]["diff"]),
                 "level": round(lv, 2), "pool": pool, "count": int(self.chart_count[ci]),
                 "currentAch": round(cur_ach, 4), "currentSkill": round(cur_skill, 2),
@@ -908,6 +936,7 @@ class Engine:
             pool = "hot" if self.pool_is_hot[ci] else "other"
             skillup.append({
                 "id": int(ci), "name": self.charts[ci]["name"], "diff": self.charts[ci]["diff"],
+                "part": self.charts[ci].get("part"),
                 "diffFull": DIFF_FULL.get(self.charts[ci]["diff"], self.charts[ci]["diff"]),
                 "level": round(lv, 2), "pool": pool, "count": int(self.chart_count[ci]),
                 "currentAch": round(cur_ach, 4), "currentSkill": round(cur_skill, 2),
@@ -948,7 +977,8 @@ class Engine:
 _engine_cache = {}
 
 
-def get_engine(version="galaxywave_delta"):
-    if version not in _engine_cache:
-        _engine_cache[version] = Engine(version)
-    return _engine_cache[version]
+def get_engine(version="galaxywave_delta", instrument="drum"):
+    key = (version, instrument)
+    if key not in _engine_cache:
+        _engine_cache[key] = Engine(version, instrument)
+    return _engine_cache[key]

@@ -7,4 +7,19 @@ package-lock.json
 /*.png
 # scraped + derived data is fetched on first run (run.ps1 / run.sh); not redistributed
 data/
+# user-submitted full-data overlays (kept explicit even though data/ covers it)
+userdata/
+data/userdata/
 .DS_Store
+
+# secrets / credentials — never commit. deploy.sh reads all account identifiers
+# from the environment; nothing sensitive belongs in the repo (it is public).
+.env
+.env.*
+*.key
+*.pem
+*-key.json
+*_key.json
+credentials*.json
+service-account*.json
+gcloud-*.json

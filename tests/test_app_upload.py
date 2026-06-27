@@ -51,7 +51,7 @@ SP = [2000.0, 1900.0, 2100.0, 1800.0, 1950.0]
 
 
 def _build_processed(root):
-    proc = os.path.join(root, "processed", VERSION)
+    proc = os.path.join(root, "processed", VERSION, "drum")
     os.makedirs(proc, exist_ok=True)
     C = len(CHARTS)
     P = len(BASE)

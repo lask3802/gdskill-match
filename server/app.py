@@ -21,6 +21,21 @@ from urllib.parse import urlparse, parse_qs
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 WEB_DIR = os.path.join(ROOT, "web")
+DATA_BASE = os.environ.get("GD_DATA_DIR") or os.path.join(ROOT, "data")
+PROC_DIR = os.path.join(DATA_BASE, "processed")
+
+# Instruments the app can serve; "drum" is the default and only one with uploads.
+KNOWN_INSTRUMENTS = ("drum", "guitar")
+DEFAULT_INSTRUMENT = "drum"
+
+
+def available_instruments(version):
+    """Instruments that actually have built artifacts for this version, so the
+    front-end only offers a switcher for ones it can load. Always includes the
+    default (drum) as a floor so a fresh/empty deploy still answers."""
+    found = [inst for inst in KNOWN_INSTRUMENTS
+             if os.path.isfile(os.path.join(PROC_DIR, version, inst, "meta.json"))]
+    return found or [DEFAULT_INSTRUMENT]
 
 # Resolve imports whether app.py is run directly (server dir on sys.path ->
 # `import engine`) or as part of the repo (`from server import ...`).
@@ -152,12 +167,21 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/api/upload", "/api/publish"):
             self._send_json({"error": "not found"}, 404)
             return
-        e = get_engine(VERSION)
+
+        # Instrument selection (?inst=drum|guitar). Default drum; reject an
+        # instrument with no built data so a bad value is a clean 400, not a 500.
+        insts = available_instruments(VERSION)
+        inst = (qs.get("inst", [DEFAULT_INSTRUMENT])[0] or DEFAULT_INSTRUMENT)
+        if inst not in insts:
+            self._send_json({"error": f"unknown instrument: {inst}"}, 400)
+            return
+        e = get_engine(VERSION, inst)
         parts = [p for p in path.split("/") if p]   # e.g. ['api','player','12','profile']
 
         if path == "/api/meta":
             self._send_json({
                 "version": VERSION, "versionName": _version_name(VERSION),
+                "instrument": inst, "instruments": insts,
                 "players": e.P, "charts": e.C, "supportCharts": e.meta["supportCharts"],
                 "svdDim": e.meta["svdDim"],
                 "kasegiBrackets": e.meta.get("kasegiBrackets", []),
@@ -186,8 +210,13 @@ class Handler(BaseHTTPRequestHandler):
             # Inject the player's uploaded overlay (spec §6): the owner (matching
             # `?token=`) sees their private overlay, everyone sees public ones.
             # No upload -> (None, None) -> exact existing base behaviour.
+            # Uploads/overlays are DrumMania-only this round, so non-drum
+            # instruments never look one up.
             token = qs.get("token", [None])[0]
-            ov, visibility = self._player_overlay(e, pid, token)
+            if inst == DEFAULT_INSTRUMENT:
+                ov, visibility = self._player_overlay(e, pid, token)
+            else:
+                ov, visibility = None, None
             sub = parts[3] if len(parts) >= 4 else "all"
             if sub == "profile":
                 prof = e.profile(pid, overlay=ov)

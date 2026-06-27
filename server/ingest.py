@@ -138,15 +138,15 @@ def validate(payload):
 
 # --- identity linking (self-attested, probabilistic) ------------------------
 
-def _players_path(version):
+def _players_path(version, instrument="drum"):
     data_base = os.environ.get("GD_DATA_DIR") or os.path.join(ROOT, "data")
-    return os.path.join(data_base, "processed", version, "players.json")
+    return os.path.join(data_base, "processed", version, instrument, "players.json")
 
 
-def _load_players(version):
+def _load_players(version, instrument="drum"):
     """Load the base players table for `version`; [] if absent/unreadable."""
     try:
-        with open(_players_path(version), encoding="utf-8") as fh:
+        with open(_players_path(version, instrument), encoding="utf-8") as fh:
             data = json.load(fh)
         return data if isinstance(data, list) else []
     except (OSError, ValueError):
@@ -157,18 +157,20 @@ def _normalise_name(name):
     return (name or "").strip().casefold()
 
 
-def link_identity(payload, version):
+def link_identity(payload, version, instrument="drum"):
     """Probabilistic self-attested match (spec §8).
 
     Match by normalised playerName, then disambiguate by drumSkillPoint within
     `SP_TOLERANCE`. Returns `(matched_db_index | None, confidence 0..1)`. A failed
     or ambiguous match returns `(None, confidence)` so the caller quarantines.
+
+    Uploads are DrumMania-only this round, so `instrument` defaults to drum.
     """
     profile = payload.get("profile") or {}
     target_name = _normalise_name(profile.get("playerName"))
     target_sp = profile.get("drumSkillPoint")
 
-    players = _load_players(version)
+    players = _load_players(version, instrument)
     if not target_name or not players:
         return None, 0.0
 
@@ -227,7 +229,7 @@ def _normalise_charts(charts):
     return out
 
 
-def ingest(payload, version):
+def ingest(payload, version, instrument="drum"):
     """Validate -> link -> store. Returns `(http_status, body_dict)`.
 
     * 400 -> `{"errors": [...]}` on validation failure (nothing stored).
@@ -247,7 +249,7 @@ def ingest(payload, version):
     # Immutable raw upload is the source of truth — always kept (spec §5.4).
     userstore.save_upload(version, gsv_id, upload_id, payload)
 
-    matched_idx, confidence = link_identity(payload, version)
+    matched_idx, confidence = link_identity(payload, version, instrument)
     if matched_idx is None:
         userstore.save_unlinked(upload_id, payload)
         return 202, {

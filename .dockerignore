@@ -3,11 +3,24 @@
 .gitattributes
 .gcloudignore
 data/
+userdata/
 docs/
+tests/
 *.md
 *.png
 __pycache__/
 **/__pycache__/
+.pytest_cache/
 .playwright-mcp/
 firebase.json
 .firebaserc
+# secrets / credentials — never ship
+.env
+.env.*
+*.key
+*.pem
+*-key.json
+*_key.json
+credentials*.json
+service-account*.json
+gcloud-*.json
