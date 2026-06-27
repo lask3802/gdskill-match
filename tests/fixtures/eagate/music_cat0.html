@@ -1,0 +1,45 @@
+<!-- Faithful (sanitised) fixture of GITADORA DrumMania music.html?gtype=dm&cat=0
+     Structure verified live 2026-06-26: header classes music_name/music_bsc/...,
+     one row per song, 4 difficulty cells each carrying ONLY a best-rank medal as a
+     CSS class `score_data_rank icon<RANK>` (icon- = unplayed). Song name links to
+     music_detail.html with params gtype,sid,cat,page,index. NOTE: `sid` is a CONSTANT
+     game id (DrumMania = 2) for EVERY song — songs are addressed positionally by
+     (cat,page,index) and identified by NAME. Auth is cookie-based, so no session
+     token appears in the URL. Alternate rows carry a leading `zebra_black`. -->
+<table>
+  <tr>
+    <th class="music_name">曲名</th>
+    <th class="music_bsc clearText">BASIC</th>
+    <th class="music_adv clearText">ADVANCE</th>
+    <th class="music_ext clearText">EXTREME</th>
+    <th class="music_mas clearText">MASTER</th>
+  </tr>
+  <tr>
+    <td class="music_name"><img src="img.html"><a href="music_detail.html?gtype=dm&sid=2&cat=0&page=1&index=0">0時20分のRoulette</a></td>
+    <td class="score_data_rank icon-"></td>
+    <td class="score_data_rank icon-"></td>
+    <td class="score_data_rank icon-"></td>
+    <td class="score_data_rank icon-"></td>
+  </tr>
+  <tr>
+    <td class="music_name zebra_black"><img src="img.html"><a href="music_detail.html?gtype=dm&sid=2&cat=0&page=1&index=2">10,000,000,000</a></td>
+    <td class="zebra_black score_data_rank icon-"></td>
+    <td class="zebra_black score_data_rank icon-"></td>
+    <td class="zebra_black score_data_rank icon-"></td>
+    <td class="zebra_black score_data_rank iconB"></td>
+  </tr>
+  <tr>
+    <td class="music_name"><img src="img.html"><a href="music_detail.html?gtype=dm&sid=2&cat=0&page=1&index=4">23 -twenty three-</a></td>
+    <td class="score_data_rank icon-"></td>
+    <td class="score_data_rank icon-"></td>
+    <td class="score_data_rank iconS"></td>
+    <td class="score_data_rank icon-"></td>
+  </tr>
+  <tr>
+    <td class="music_name zebra_black"><img src="img.html"><a href="music_detail.html?gtype=dm&sid=2&cat=0&page=1&index=6">3dim</a></td>
+    <td class="zebra_black score_data_rank icon-"></td>
+    <td class="zebra_black score_data_rank iconA"></td>
+    <td class="zebra_black score_data_rank icon-"></td>
+    <td class="zebra_black score_data_rank icon-"></td>
+  </tr>
+</table>

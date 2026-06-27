@@ -34,6 +34,8 @@ by a margin, and are down-weighted when supporting evidence is thin.
 import json
 import math
 import os
+import sys
+import time
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -41,7 +43,18 @@ ROOT = os.path.dirname(HERE)
 DATA_BASE = os.environ.get("GD_DATA_DIR") or os.path.join(ROOT, "data")
 PROC_DIR = os.path.join(DATA_BASE, "processed")
 
+# Resolve sibling modules as `server.*` whether engine.py is imported as
+# `server.engine` (tests) or top-level `engine` (app.py inserts the server dir
+# on sys.path). The overlay layer is read-only and never touches base stats.
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+from server import overlay as overlay_mod  # noqa: E402
+from server import userstore  # noqa: E402
+
 DIFF_FULL = {"BAS": "BASIC", "ADV": "ADVANCED", "EXT": "EXTREME", "MAS": "MASTER"}
+
+# gsv profile path suffix per instrument (…/<version>/<playerId>/<suffix>).
+GSV_TYPE = {"drum": "d", "guitar": "g"}
 
 
 def _safe_norm(mat, axis=1):
@@ -51,9 +64,10 @@ def _safe_norm(mat, axis=1):
 
 
 class Engine:
-    def __init__(self, version="galaxywave_delta"):
+    def __init__(self, version="galaxywave_delta", instrument="drum"):
         self.version = version
-        d = os.path.join(PROC_DIR, version)
+        self.instrument = instrument
+        d = os.path.join(PROC_DIR, version, instrument)
         with open(os.path.join(d, "charts.json"), encoding="utf-8") as f:
             self.charts = json.load(f)
         with open(os.path.join(d, "players.json"), encoding="utf-8") as f:
@@ -97,13 +111,29 @@ class Engine:
         for p in self.players:
             self._by_lower.setdefault((p["name"] or "").lower(), []).append(p["id"])
 
+        # chart identity -> index, for projecting an upload overlay onto the base
+        # catalog and for kasegi lookups; and a per-player overlay cache (lazy,
+        # owner/visibility-gated). DrumMania keys on (name, diff); GuitarFreaks
+        # keys on (name, diff, part) so a song's guitar and bass charts stay
+        # distinct (see `_ckey`).
+        self._chart_index = {self._ckey(c): i for i, c in enumerate(self.charts)}
+        self._overlay_cache = {}
+
         self.kasegi_by_scope = {}
         for k in self.kasegi:
             m = {}
             for pool in ("hot", "other"):
                 for rec in (k.get(pool) or []):
-                    m[(rec["name"], rec["diff"])] = rec
+                    m[self._ckey(rec)] = rec
             self.kasegi_by_scope[k["scope"]] = m
+
+    def _ckey(self, rec):
+        """Chart identity tuple. DrumMania is single-part so it keys on
+        (name, diff) — identical to the historical catalog; GuitarFreaks adds the
+        part (G / B) so guitar and bass charts of one song are distinct."""
+        if self.instrument == "drum":
+            return (rec["name"], rec["diff"])
+        return (rec["name"], rec["diff"], rec.get("part"))
 
     # ---------------- lookups ----------------
     def find_players(self, query, limit=25):
@@ -129,7 +159,8 @@ class Engine:
         }
 
     def _gsv_url(self, player_id):
-        return f"http://gsv.fun/en/{self.version}/{player_id}/d"
+        suffix = GSV_TYPE.get(self.instrument, "d")
+        return f"http://gsv.fun/en/{self.version}/{player_id}/{suffix}"
 
     # ---------------- similarity signals ----------------
     def _signals(self, i):
@@ -150,6 +181,114 @@ class Engine:
     @staticmethod
     def _confidence(shared):
         return round(min(1.0, float(shared) / 15.0), 2)
+
+    # ---------------- overlay (uploaded full-data) ----------------
+    OVERLAY_TTL = 60.0  # seconds — lazy refresh so a new upload / publish-flip
+    #                     takes effect quickly without restarting the process.
+
+    def get_overlay(self, i, as_owner=False):
+        """Lazily load player i's uploaded overlay (spec §6), or None.
+
+        Visibility-gated: the owner (`as_owner=True`) always sees their overlay;
+        everyone else only sees it once it is `public`. Load failures fall back
+        silently to base behaviour (spec §10) — never break the read path.
+
+        Cached with a short TTL so a fresh upload or a /api/publish visibility
+        flip is picked up promptly (see also `invalidate_overlay`).
+        """
+        now = time.time()
+        cached = self._overlay_cache.get(i)
+        if cached is None or (now - cached[1]) > self.OVERLAY_TTL:
+            self._overlay_cache[i] = (self._load_overlay(i), now)
+            cached = self._overlay_cache[i]
+        entry = cached[0]
+        if entry is None:
+            return None
+        ov, visibility = entry
+        if as_owner or visibility == "public":
+            return ov
+        return None
+
+    def invalidate_overlay(self, gsv_player_id):
+        """Drop any cached overlay for a player so the next request reloads it.
+        Called after an upload or a /api/publish visibility flip so changes are
+        visible immediately rather than only after the TTL expires."""
+        for idx, p in enumerate(self.players):
+            if p.get("playerId") == gsv_player_id:
+                self._overlay_cache.pop(idx, None)
+
+    def _load_overlay(self, i):
+        """Build and cache `(Overlay, visibility)` for player i, or None.
+
+        Full-data uploads are DrumMania-only this round (the e-amusement
+        bookmarklet scrapes gtype=dm), so other instruments never carry an
+        overlay — short-circuit to base behaviour."""
+        if self.instrument != "drum":
+            return None
+        try:
+            latest = userstore.get_latest(self.version, self.players[i]["playerId"])
+        except Exception:  # noqa: BLE001 — overlay must never break base behaviour
+            return None
+        if not isinstance(latest, dict) or not latest.get("charts"):
+            return None
+        try:
+            kmap = self.kasegi_by_scope.get(self._kasegi_scope_for(self.sp[i]), {})
+            ov = overlay_mod.build_overlay(
+                latest, self._chart_index, self.charts, self.levels,
+                ctx_fn=lambda ci: self._ctx_prior(i, ci, kmap))
+        except Exception:  # noqa: BLE001
+            return None
+        return ov, latest.get("visibility", "private")
+
+    def _ctx_prior(self, i, ci, kmap=None):
+        """Context prior `(mu_ctx, var_ctx)` for a rank-only observation on chart
+        ci, wrapping `_expected_ach` (same-bracket holders + kasegi + chart mean).
+        A confident context is tight; a weak one is broad so the rank band
+        dominates the Bayesian combine (server/ranks.bayes_combine)."""
+        if kmap is None:
+            kmap = self.kasegi_by_scope.get(self._kasegi_scope_for(self.sp[i]), {})
+        mu_ctx, conf = self._expected_ach(i, ci, kmap)
+        sd0 = max(float(self.charts[ci].get("ach_std") or 0.0), 0.04)
+        var_ctx = (sd0 * sd0) / max(float(conf), 0.05)
+        return float(mu_ctx), float(var_ctx)
+
+    def _signals_overlay(self, i, ov):
+        """Asymmetric similarity for a DENSE overlay player vs the sparse field.
+
+        taste : IDF-weighted fraction of EACH peer j's held charts that fall in
+                i's overlay played set — normalised by j's mass (not the union),
+                so a dense i is not punished by a huge union (spec §6.2).
+        style : overlap-normalised cosine of i's overlay z-vector (weighted by
+                obs_weight) against peer j's z-vector, over the charts they share.
+        latent: base SVD echo, downweighted x0.3 (emb trained on sparse rows).
+        """
+        ov_pres = ov.played_mask.astype(np.float32)              # C
+        # asymmetric, coverage-style taste (normalise by the PEER's mass)
+        inter_w = self.presw @ ov_pres                            # P
+        taste = np.divide(inter_w, self.wrow,
+                          out=np.zeros_like(inter_w), where=self.wrow > 0)
+        shared = self.presf @ ov_pres                             # P
+
+        # i's weighted overlay z vector over evaluated, supported charts
+        m = ov.eval_mask & self.support_mask
+        zi = np.zeros(self.C, dtype=np.float32)
+        # propagate observation uncertainty into the z denominator (spec §6.1):
+        # sqrt(chart_std^2 + skill_sd^2) so a fuzzy rank-only obs is shrunk toward 0.
+        denom_i = np.sqrt(self.chart_std[m] ** 2 + ov.skill_sd[m] ** 2)
+        zi[m] = ((ov.skill_mean[m] - self.chart_mean[m]) / denom_i).astype(np.float32)
+        zi = zi * ov.obs_weight.astype(np.float32)
+        num = self.zn @ zi                                        # P (shared-only: zeros cancel)
+        ni = np.sqrt(self.presf @ (zi * zi))                      # ||zi|| over each peer's held set
+        ievalf = m.astype(np.float32)
+        nj = np.sqrt((self.zn * self.zn) @ ievalf)                # ||zn_j|| over i's eval set
+        denom = ni * nj
+        style = np.divide(num, denom, out=np.zeros_like(num), where=denom > 1e-9)
+
+        latent = (self.emb @ self.emb[i]) * 0.3                   # downweighted secondary signal
+        composite = 0.55 * np.clip(style, 0, None) + 0.45 * taste
+        composite[i] = -1
+        return {"style": style, "latent": latent, "taste": taste,
+                "shared": shared, "composite": composite}
 
     # ---------------- profile ----------------
     def _weighted_z(self, i, band=300.0):
@@ -172,7 +311,7 @@ class Engine:
         near = self.presence[np.abs(self.sp - sp_i) <= band].sum(axis=0)
         return mean, std, sw, near
 
-    def profile(self, i):
+    def profile(self, i, overlay=None):
         p = self.players[i]
         held = np.where(self.presence[i] > 0)[0]
         wmean, wstd, wsw, near = self._weighted_z(i)
@@ -215,7 +354,7 @@ class Engine:
         kmap = self.kasegi_by_scope.get(kscope, {})
         efficient = [self._cd(i, ci, z=wz(ci), near=int(near[ci])) for ci in
                      sorted(held, key=lambda ci: -self.chart_count[ci])
-                     if (self.charts[ci]["name"], self.charts[ci]["diff"]) in kmap][:8]
+                     if self._ckey(self.charts[ci]) in kmap][:8]
 
         # full skill sheet split by pool, sorted by skill desc — feeds the pad grid
         hot_ids = [ci for ci in held if self.pool_is_hot[ci]]
@@ -225,7 +364,7 @@ class Engine:
         sheet_other = [self._cd(i, ci, z=wz(ci), near=int(near[ci]))
                        for ci in sorted(other_ids, key=lambda ci: -self.skill[i, ci])]
 
-        return {
+        result = {
             "player": self._brief(i),
             "rank": rank, "totalPlayers": self.P,
             "percentile": round(100.0 * (1 - rank / self.P), 1),
@@ -241,6 +380,91 @@ class Engine:
             "sheetHot": sheet_hot, "sheetOther": sheet_other,
             "kasegiScope": kscope, "compareBand": 300,
         }
+        if overlay is not None:
+            self._apply_overlay_profile(i, result, overlay, wmean, wstd, wsw, near)
+        return result
+
+    def _apply_overlay_profile(self, i, result, ov, wmean, wstd, wsw, near):
+        """Override the sheet/signature/improve from overlay observations and add
+        an `enhanced` flag + `overlayStats` block (spec §6.3). Low-signal charts
+        are filtered (playable level band + enough same-bracket peers) so the
+        dense sheet is not washed out by masses of low-difficulty charts."""
+        played_ids = np.where(ov.played_mask)[0]
+        eval_ids = [int(ci) for ci in np.where(ov.eval_mask)[0]]
+        lv_played = self.levels[played_ids]
+        ov_max = float(lv_played.max()) if len(lv_played) else 0.0
+        ov_med = float(np.median(lv_played)) if len(lv_played) else 0.0
+        lo, hi = ov_med - 2.5, ov_max + 0.6
+
+        def wz_ov(ci):
+            # spec §6.1: z = (skill_mean - bracket_mean) / sqrt(bracket_std^2 + skill_sd^2)
+            # so a high-variance rank-only observation is ranked less confidently
+            # than an exact one on the same chart.
+            if wsw[ci] <= 1e-6:
+                return None
+            denom = math.sqrt(float(wstd[ci]) ** 2 + float(ov.skill_sd[ci]) ** 2)
+            return float((ov.skill_mean[ci] - wmean[ci]) / denom) if denom > 1e-9 else None
+
+        rows = []
+        for ci in eval_ids:
+            lvc = float(self.levels[ci])
+            if lvc < lo or lvc > hi:
+                continue
+            z = wz_ov(ci)
+            if z is None or near[ci] < 4:
+                continue
+            rows.append((ci, z))
+        signature = [self._cd_ov(i, ci, ov, z=z, near=int(near[ci]))
+                     for ci, z in sorted(rows, key=lambda r: -r[1])][:12]
+        improve = [self._cd_ov(i, ci, ov, z=z, near=int(near[ci]))
+                   for ci, z in sorted(rows, key=lambda r: r[1]) if z < -0.2][:8]
+
+        band_eval = [ci for ci in eval_ids if lo <= float(self.levels[ci]) <= hi]
+        hot_ids = [ci for ci in band_eval if self.pool_is_hot[ci]]
+        other_ids = [ci for ci in band_eval if not self.pool_is_hot[ci]]
+        sheet_hot = [self._cd_ov(i, ci, ov, z=wz_ov(ci), near=int(near[ci]))
+                     for ci in sorted(hot_ids, key=lambda ci: -ov.skill_mean[ci])]
+        sheet_other = [self._cd_ov(i, ci, ov, z=wz_ov(ci), near=int(near[ci]))
+                       for ci in sorted(other_ids, key=lambda ci: -ov.skill_mean[ci])]
+
+        kinds = ov.obs_kind
+        exact_n = int(((kinds == overlay_mod.KIND_GSV_EXACT)
+                       | (kinds == overlay_mod.KIND_UPLOAD_EXACT)).sum())
+        result.update({
+            "enhanced": True,
+            "signature": signature, "improve": improve,
+            "sheetHot": sheet_hot, "sheetOther": sheet_other,
+            "overlayStats": {
+                "played": int(ov.played_mask.sum()),
+                "evaluated": int(ov.eval_mask.sum()),
+                "exact": exact_n,
+                "coarse": int((kinds == overlay_mod.KIND_UPLOAD_RANK).sum()),
+                "extraCharts": len(ov.extra),
+                "allSongSkillComputed": round(float(ov.skill_mean.sum()), 2),
+                "bandLow": round(lo, 2), "bandHigh": round(hi, 2),
+            },
+        })
+
+    def _cd_ov(self, i, ci, ov, z=None, near=None):
+        """Overlay chart detail: like `_cd` but reads the uploaded observation
+        (posterior skill/achievement, observation kind & weight) instead of the
+        sparse base matrix."""
+        c = self.charts[ci]
+        kind = int(ov.obs_kind[ci])
+        return {
+            "id": int(ci), "name": c["name"], "diff": c["diff"], "part": c.get("part"),
+            "diffFull": DIFF_FULL.get(c["diff"], c["diff"]),
+            "level": c["level"], "pool": c["pool"], "count": int(c["count"]),
+            "skill": round(float(ov.skill_mean[ci]), 2),
+            "skillSd": round(float(ov.skill_sd[ci]), 2),
+            "ach": round(float(ov.ach_mean[ci]), 4),
+            "obsKind": kind,
+            "obsWeight": round(float(ov.obs_weight[ci]), 3),
+            "exact": kind in (overlay_mod.KIND_GSV_EXACT, overlay_mod.KIND_UPLOAD_EXACT),
+            "z": round(z, 2) if z is not None else None,
+            "nearPeers": near,
+            "chartSkillMean": c["skill_mean"], "chartAchMean": c["ach_mean"],
+        }
 
     def _cd(self, i, ci, z=None, near=None):
         """Chart detail. `z` is the bracket-relative z-score (vs same-level peers);
@@ -248,7 +472,7 @@ class Engine:
         c = self.charts[ci]
         present = bool(self.presence[i, ci])
         return {
-            "id": int(ci), "name": c["name"], "diff": c["diff"],
+            "id": int(ci), "name": c["name"], "diff": c["diff"], "part": c.get("part"),
             "diffFull": DIFF_FULL.get(c["diff"], c["diff"]),
             "level": c["level"], "pool": c["pool"], "count": int(c["count"]),
             "skill": round(float(self.skill[i, ci]), 2) if present else None,
@@ -324,7 +548,7 @@ class Engine:
 
         return {
             "chart": {
-                "id": ci, "name": c["name"], "diff": c["diff"],
+                "id": ci, "name": c["name"], "diff": c["diff"], "part": c.get("part"),
                 "diffFull": DIFF_FULL.get(c["diff"], c["diff"]),
                 "level": c["level"], "pool": c["pool"], "globalHolders": int(c["count"]),
             },
@@ -338,8 +562,8 @@ class Engine:
         }
 
     # ---------------- similar players ----------------
-    def similar_players(self, i, k=12):
-        s = self._signals(i)
+    def similar_players(self, i, k=12, overlay=None):
+        s = self._signals(i) if overlay is None else self._signals_overlay(i, overlay)
         order = np.argsort(-s["composite"])[: k * 3]
         out = []
         for j in order:
@@ -355,28 +579,32 @@ class Engine:
                 "sharedCharts": int(s["shared"][j]),
                 "spGap": round(float(self.sp[j] - self.sp[i]), 2),
                 "confidence": self._confidence(s["shared"][j]),
-                "sharedHighlights": self._pair_shared(i, j, 4),
-                "learnFrom": self._learn_from(i, j, 4),
+                "sharedHighlights": self._pair_shared(i, j, 4, ov=overlay),
+                "learnFrom": self._learn_from(i, j, 4, ov=overlay),
             })
             out.append(b)
             if len(out) >= k:
                 break
         return out
 
-    def _pair_shared(self, i, j, n):
-        both = np.where((self.presence[i] > 0) & (self.presence[j] > 0)
-                        & self.support_mask)[0]
-        both = sorted(both, key=lambda ci: -(self.skill[i, ci] + self.skill[j, ci]))[:n]
+    def _pair_shared(self, i, j, n, ov=None):
+        pres_i = ov.played_mask if ov is not None else (self.presence[i] > 0)
+        skill_i = ov.skill_mean if ov is not None else self.skill[i]
+        both = np.where(pres_i & (self.presence[j] > 0) & self.support_mask)[0]
+        both = sorted(both, key=lambda ci: -(skill_i[ci] + self.skill[j, ci]))[:n]
         return [{"name": self.charts[ci]["name"], "diff": self.charts[ci]["diff"],
+                 "part": self.charts[ci].get("part"),
                  "level": self.charts[ci]["level"],
-                 "yours": round(float(self.skill[i, ci]), 2),
+                 "yours": round(float(skill_i[ci]), 2),
                  "theirs": round(float(self.skill[j, ci]), 2)} for ci in both]
 
-    def _learn_from(self, i, j, n):
+    def _learn_from(self, i, j, n, ov=None):
         """Charts the other holds that A lacks, split by pool (what A could pick up)."""
-        only_j = np.where((self.presence[j] > 0) & (self.presence[i] == 0))[0]
+        pres_i = ov.played_mask if ov is not None else (self.presence[i] > 0)
+        only_j = np.where((self.presence[j] > 0) & (~pres_i))[0]
         only_j = sorted(only_j, key=lambda ci: -self.skill[j, ci])[:n]
         return [{"name": self.charts[ci]["name"], "diff": self.charts[ci]["diff"],
+                 "part": self.charts[ci].get("part"),
                  "level": self.charts[ci]["level"], "pool": self.charts[ci]["pool"],
                  "theirs": round(float(self.skill[j, ci]), 2)} for ci in only_j]
 
@@ -442,6 +670,7 @@ class Engine:
             if (win and d <= 0) or (not win and d >= 0):
                 continue
             res.append({"name": self.charts[ci]["name"], "diff": self.charts[ci]["diff"],
+                        "part": self.charts[ci].get("part"),
                         "level": self.charts[ci]["level"],
                         "yours": round(float(self.skill[i, ci]), 2),
                         "theirs": round(float(self.skill[j, ci]), 2),
@@ -470,7 +699,7 @@ class Engine:
                 w = np.exp(-(np.abs(self.sp[near] - sp_i) / 350.0) ** 2)
                 parts.append(float((self.ach[near, ci] * w).sum() / max(w.sum(), 1e-6)))
                 weights.append(min(1.0, len(near) / 12.0) * 1.0)
-        krec = kmap.get((self.charts[ci]["name"], self.charts[ci]["diff"]))
+        krec = kmap.get(self._ckey(self.charts[ci]))
         if krec and krec.get("averageSkill") and self.levels[ci] > 0:
             ka = float(krec["averageSkill"]) / (self.levels[ci] * 20.0)
             parts.append(min(ka, 1.0))
@@ -483,7 +712,9 @@ class Engine:
         conf = round(min(1.0, float(w[:-1].sum())), 2)  # exclude the weak global prior
         return est, conf
 
-    def song_recs(self, i, k=15, neighbors=30):
+    def song_recs(self, i, k=15, neighbors=30, overlay=None):
+        if overlay is not None:
+            return self._song_recs_overlay(i, overlay, k=k, neighbors=neighbors)
         s = self._signals(i)
         nbr = [int(j) for j in np.argsort(-s["composite"])[:neighbors]
                if s["composite"][j] > 0]
@@ -516,9 +747,10 @@ class Engine:
             pool = "hot" if self.pool_is_hot[ci] else "other"
             cutoff = p["hotCutoff"] if pool == "hot" else p["otherCutoff"]
             gain = est_skill - cutoff
-            krec = kmap.get((self.charts[ci]["name"], self.charts[ci]["diff"]))
+            krec = kmap.get(self._ckey(self.charts[ci]))
             cand.append({
                 "id": int(ci), "name": self.charts[ci]["name"], "diff": self.charts[ci]["diff"],
+                "part": self.charts[ci].get("part"),
                 "diffFull": DIFF_FULL.get(self.charts[ci]["diff"], self.charts[ci]["diff"]),
                 "level": round(lv, 2), "pool": pool, "count": int(self.chart_count[ci]),
                 "neighborHolders": int(ncol[ci]), "neighborTotal": len(nbr),
@@ -576,6 +808,154 @@ class Engine:
                 "myMedianLevel": round(my_med_lv, 2),
                 "discovery": discovery, "skillUp": skillup, "combined": combined}
 
+    def _song_recs_overlay(self, i, ov, k=15, neighbors=30):
+        """Overlay-aware three-class song recommendations (spec §6.3):
+
+          discovery      : charts the player has NOT played (overlay played_mask
+                           false) that similar players hold.
+          practiceTargets: charts PLAYED but below the pool cutoff — the new value
+                           of dense data; shows the achievement needed to qualify.
+          skillUp        : exact / high-confidence coarse charts at-or-above the
+                           cutoff with headroom to raise the single-chart skill.
+        """
+        s = self._signals_overlay(i, ov)
+        nbr = [int(j) for j in np.argsort(-s["composite"])[:neighbors]
+               if s["composite"][j] > 0]
+        sims = np.array([s["composite"][j] for j in nbr], dtype=np.float32)
+        wsum = float(sims.sum()) or 1.0
+
+        played = ov.played_mask
+        played_ids = [int(ci) for ci in np.where(played)[0]]
+        lv_played = self.levels[np.where(played)[0]]
+        my_max_lv = float(lv_played.max()) if len(lv_played) else 9.9
+        my_med_lv = float(np.median(lv_played)) if len(lv_played) else 8.0
+        p = self.players[i]
+        kscope = self._kasegi_scope_for(p["sp"])
+        kmap = self.kasegi_by_scope.get(kscope, {})
+
+        if nbr:
+            nbr_pres = self.presence[nbr]
+            wcol = (nbr_pres * sims[:, None]).sum(axis=0)
+            ncol = nbr_pres.sum(axis=0)
+        else:
+            wcol = np.zeros(self.C, dtype=np.float32)
+            ncol = np.zeros(self.C, dtype=np.float32)
+
+        def cutoff_for(ci):
+            return float(p["hotCutoff"] if self.pool_is_hot[ci] else p["otherCutoff"])
+
+        # ---- discovery: not played, neighbour taste ----
+        disc = []
+        for ci in range(self.C):
+            if played[ci] or not self.support_mask[ci] or ncol[ci] == 0:
+                continue
+            lv = float(self.levels[ci])
+            if lv > my_max_lv + 0.6 or lv < my_med_lv - 2.5:
+                continue
+            wfrac = float(wcol[ci]) / wsum
+            est_ach, est_conf = self._expected_ach(i, ci, kmap)
+            est_skill = lv * 20.0 * est_ach
+            pool = "hot" if self.pool_is_hot[ci] else "other"
+            cutoff = cutoff_for(ci)
+            krec = kmap.get(self._ckey(self.charts[ci]))
+            disc.append({
+                "id": int(ci), "name": self.charts[ci]["name"], "diff": self.charts[ci]["diff"],
+                "part": self.charts[ci].get("part"),
+                "diffFull": DIFF_FULL.get(self.charts[ci]["diff"], self.charts[ci]["diff"]),
+                "level": round(lv, 2), "pool": pool, "count": int(self.chart_count[ci]),
+                "neighborHolders": int(ncol[ci]), "neighborTotal": len(nbr),
+                "neighborFrac": round(wfrac, 3),
+                "estAch": round(est_ach, 4), "estSkill": round(est_skill, 2),
+                "estConfidence": est_conf, "cutoff": round(cutoff, 2),
+                "gain": round(est_skill - cutoff, 2),
+                "chartAchMean": self.charts[ci]["ach_mean"], "inKasegi": bool(krec),
+                "tags": [],
+            })
+        discovery = sorted(disc, key=lambda c: (-c["neighborFrac"], -c["count"]))[:k]
+        for c in discovery:
+            c["tags"] = self._rec_tags(c, my_med_lv, kind="discovery")
+            c["why"] = (f"{c['neighborHolders']}/{c['neighborTotal']} 位與你最相似的玩家"
+                        f"都在玩這首（Lv{c['level']:.2f}），你還沒玩過")
+
+        # ---- practice targets: played but below the pool cutoff ----
+        practice = []
+        for ci in played_ids:
+            if not ov.eval_mask[ci]:
+                continue
+            lv = float(self.levels[ci])
+            if lv <= 0:
+                continue
+            cutoff = cutoff_for(ci)
+            cur_skill = float(ov.skill_mean[ci])
+            if cur_skill >= cutoff:           # already in / above the pool
+                continue
+            needed_ach = cutoff / (lv * 20.0)
+            if needed_ach > 1.0:              # cutoff unreachable on this chart
+                continue
+            cur_ach = float(ov.ach_mean[ci])
+            if needed_ach <= cur_ach:         # would already qualify
+                continue
+            kind = int(ov.obs_kind[ci])
+            pool = "hot" if self.pool_is_hot[ci] else "other"
+            practice.append({
+                "id": int(ci), "name": self.charts[ci]["name"], "diff": self.charts[ci]["diff"],
+                "part": self.charts[ci].get("part"),
+                "diffFull": DIFF_FULL.get(self.charts[ci]["diff"], self.charts[ci]["diff"]),
+                "level": round(lv, 2), "pool": pool, "count": int(self.chart_count[ci]),
+                "currentAch": round(cur_ach, 4), "currentSkill": round(cur_skill, 2),
+                "neededAch": round(needed_ach, 4), "achGap": round(needed_ach - cur_ach, 4),
+                "cutoff": round(cutoff, 2), "gainIfCutoff": round(cutoff - cur_skill, 2),
+                "obsKind": kind, "obsWeight": round(float(ov.obs_weight[ci]), 3),
+                "exact": kind in (overlay_mod.KIND_GSV_EXACT, overlay_mod.KIND_UPLOAD_EXACT),
+                "tags": [],
+            })
+        practice.sort(key=lambda c: (c["achGap"], -c["level"]))
+        practice = practice[:k]
+        for c in practice:
+            c["why"] = (f"已玩過但未進帳：目前約 {c['currentAch']*100:.2f}%，"
+                        f"打到 {c['neededAch']*100:.2f}% 即可越過 {c['pool'].upper()} 門檻 "
+                        f"{c['cutoff']:.2f}（+{c['gainIfCutoff']:.2f}）")
+
+        # ---- skill-up: played, near/above cutoff, confident obs, room to grow ----
+        skillup = []
+        for ci in played_ids:
+            if not ov.eval_mask[ci] or float(ov.obs_weight[ci]) < 0.5:
+                continue                       # require exact or strong coarse obs
+            lv = float(self.levels[ci])
+            if lv <= 0:
+                continue
+            cutoff = cutoff_for(ci)
+            cur_skill = float(ov.skill_mean[ci])
+            cur_ach = float(ov.ach_mean[ci])
+            if cur_skill < cutoff - 6.0 or cur_ach >= 0.98:
+                continue                       # too far below cutoff, or no headroom
+            head = lv * 20.0 - max(cur_skill, cutoff)
+            if head <= 0:
+                continue
+            kind = int(ov.obs_kind[ci])
+            pool = "hot" if self.pool_is_hot[ci] else "other"
+            skillup.append({
+                "id": int(ci), "name": self.charts[ci]["name"], "diff": self.charts[ci]["diff"],
+                "part": self.charts[ci].get("part"),
+                "diffFull": DIFF_FULL.get(self.charts[ci]["diff"], self.charts[ci]["diff"]),
+                "level": round(lv, 2), "pool": pool, "count": int(self.chart_count[ci]),
+                "currentAch": round(cur_ach, 4), "currentSkill": round(cur_skill, 2),
+                "cutoff": round(cutoff, 2), "headroom": round(head, 2),
+                "obsKind": kind,
+                "exact": kind in (overlay_mod.KIND_GSV_EXACT, overlay_mod.KIND_UPLOAD_EXACT),
+                "tags": [],
+            })
+        skillup.sort(key=lambda c: -c["headroom"])
+        skillup = skillup[:k]
+        for c in skillup:
+            c["why"] = (f"已在帳上（{c['currentAch']*100:.2f}%）：衝高達成率最多再 "
+                        f"+{c['headroom']:.2f} 單曲 skill（{c['pool'].upper()} 門檻 "
+                        f"{c['cutoff']:.2f}）")
+
+        return {"enhanced": True, "kasegiScope": kscope,
+                "myMaxLevel": round(my_max_lv, 2), "myMedianLevel": round(my_med_lv, 2),
+                "discovery": discovery, "practiceTargets": practice, "skillUp": skillup}
+
     def _rec_tags(self, c, med_lv, kind):
         # stable keys; the frontend localises them (see i18n.js tag.*)
         tags = []
@@ -597,7 +977,8 @@ class Engine:
 _engine_cache = {}
 
 
-def get_engine(version="galaxywave_delta"):
-    if version not in _engine_cache:
-        _engine_cache[version] = Engine(version)
-    return _engine_cache[version]
+def get_engine(version="galaxywave_delta", instrument="drum"):
+    key = (version, instrument)
+    if key not in _engine_cache:
+        _engine_cache[key] = Engine(version, instrument)
+    return _engine_cache[key]

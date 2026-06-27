@@ -1,0 +1,60 @@
+<!-- Faithful (sanitised) fixture of the "10,000,000,000" detail page.
+     Structure verified live 2026-06-26 (with cat= EMPTY & index=2): four difficulty
+     areas (diff_BASIC/ADVANCED/EXTREME/MASTER). The level marker is a NESTED element
+     <th class="diff_X"><div class="diff_X">N.NN</div></th> (number only). Each metric is a
+     <td class="idx_tb h l">LABEL</td><td class="r">VALUE</td> pair; 達成率 = exact % or "-".
+     MASTER real values: 2 plays, 2 clears, 達成率 65.15%, hi-score 435855, combo 273.
+     NOTE: on a PLAYED song the live 最高ランク cell renders the medal via a CSS class
+     (`r score_data_clear`) with no rank letter in the DOM — so in practice parseDetail
+     returns rank '-' and buildPayload falls back to the LIST-page rank. This fixture keeps a
+     parseable `score_data_rank B` to exercise rankFromFragment. Addressing caveat: scores
+     only populate with cat= EMPTY; the (cat,index) detail addressing is still being worked out. -->
+<div class="song_title">10,000,000,000</div>
+
+<div class="diff_area">
+  <th class="diff_BASIC"><div class="diff_BASIC">4.45</div></th>
+  <table>
+    <tr><td class="idx_tb h l">プレー回数</td><td class="r">0</td></tr>
+    <tr><td class="idx_tb h l">クリア回数</td><td class="r">0</td></tr>
+    <tr><td class="idx_tb h l">最高ランク</td><td class="r"><div class="score_data_rank none"></div></td></tr>
+    <tr><td class="idx_tb h l">達成率</td><td class="r">-</td></tr>
+    <tr><td class="idx_tb h l">ハイスコア</td><td class="r">0</td></tr>
+    <tr><td class="idx_tb h l">MAX COMBO</td><td class="r">0</td></tr>
+  </table>
+</div>
+
+<div class="diff_area">
+  <th class="diff_ADVANCED"><div class="diff_ADVANCED">6.10</div></th>
+  <table>
+    <tr><td class="idx_tb h l">プレー回数</td><td class="r">0</td></tr>
+    <tr><td class="idx_tb h l">クリア回数</td><td class="r">0</td></tr>
+    <tr><td class="idx_tb h l">最高ランク</td><td class="r"><div class="score_data_rank none"></div></td></tr>
+    <tr><td class="idx_tb h l">達成率</td><td class="r">-</td></tr>
+    <tr><td class="idx_tb h l">ハイスコア</td><td class="r">0</td></tr>
+    <tr><td class="idx_tb h l">MAX COMBO</td><td class="r">0</td></tr>
+  </table>
+</div>
+
+<div class="diff_area">
+  <th class="diff_EXTREME"><div class="diff_EXTREME">8.45</div></th>
+  <table>
+    <tr><td class="idx_tb h l">プレー回数</td><td class="r">0</td></tr>
+    <tr><td class="idx_tb h l">クリア回数</td><td class="r">0</td></tr>
+    <tr><td class="idx_tb h l">最高ランク</td><td class="r"><div class="score_data_rank none"></div></td></tr>
+    <tr><td class="idx_tb h l">達成率</td><td class="r">-</td></tr>
+    <tr><td class="idx_tb h l">ハイスコア</td><td class="r">0</td></tr>
+    <tr><td class="idx_tb h l">MAX COMBO</td><td class="r">0</td></tr>
+  </table>
+</div>
+
+<div class="diff_area">
+  <th class="diff_MASTER"><div class="diff_MASTER">9.35</div></th>
+  <table>
+    <tr><td class="idx_tb h l">プレー回数</td><td class="r">2 回</td></tr>
+    <tr><td class="idx_tb h l">クリア回数</td><td class="r">2 回</td></tr>
+    <tr><td class="idx_tb h l">最高ランク</td><td class="r"><div class="score_data_rank B"></div></td></tr>
+    <tr><td class="idx_tb h l">達成率</td><td class="r">65.15%</td></tr>
+    <tr><td class="idx_tb h l">ハイスコア</td><td class="r">435855</td></tr>
+    <tr><td class="idx_tb h l">MAX COMBO</td><td class="r">273</td></tr>
+  </table>
+</div>

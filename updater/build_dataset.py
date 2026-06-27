@@ -1,17 +1,23 @@
 """
 build_dataset.py — Turn raw gsv.fun JSONL into the analysis artifacts the app loads.
 
-Outputs (under data/processed/<version>/):
-  charts.json      catalog of every distinct chart (name, diff, level, pool, corpus stats)
+Outputs (under data/processed/<version>/<instrument>/):
+  charts.json      catalog of every distinct chart (name, diff, part, level, pool, stats)
   players.json     per-player metadata (id, name, skill point, hot/other cutoffs, sheet)
   matrix.npz       dense float32 player x chart skill matrix + presence + chart arrays + SVD
-  meta.json        version, counts, build timestamp placeholder, kasegi summary
+  meta.json        version, instrument, counts, build timestamp, kasegi summary
 
-Chart identity = (name, diff). part is always "D" (drum). HOT and OTHER pools are a
-clean partition by song vintage (verified: zero chart appears in both), so each chart
-gets exactly one pool. Skill formula: skill_value = level * 20 * achievement.
+Chart identity = (name, diff, part). For DrumMania `part` is always "D" (a single
+part), so the catalog is identical to the historical (name, diff) keying — it just
+gains a `part` field. For GuitarFreaks a song's guitar (G) and bass (B) charts at
+the same difficulty are DISTINCT entries: GF skill spans both parts.
 
-Run:  python pipeline/build_dataset.py [--version galaxywave_delta] [--min-support 5] [--svd-dim 32]
+HOT and OTHER pools are a clean partition by song vintage, so each chart gets one
+pool. Skill formula: skill_value = level * 20 * achievement.
+
+Run:  python pipeline/build_dataset.py [--version galaxywave_delta]
+                                       [--instrument drum|guitar]
+                                       [--min-support 5] [--svd-dim 32]
 """
 
 import argparse
@@ -31,6 +37,12 @@ PROC_DIR = os.path.join(DATA_BASE, "processed")
 
 DIFF_ORDER = {"BAS": 0, "ADV": 1, "EXT": 2, "MAS": 3}
 
+# Per-instrument gsv skillpoint field carried in the raw records, and the canonical
+# single-part code for instruments that have only one part (DrumMania).
+SKILLPOINT_FIELD = {"drum": "drumSkillPoint", "guitar": "guitarSkillPoint"}
+SINGLE_PART = {"drum": "D"}          # guitar has real per-chart parts (G / B)
+DEFAULT_PART = {"drum": "D", "guitar": "G"}
+
 
 def parse_ach(s):
     """'97.54%' -> 0.9754 ; robust to missing."""
@@ -43,12 +55,21 @@ def parse_ach(s):
         return None
 
 
-def chart_key(name, diff):
-    return f"{name}␟{diff}"  # unit separator to avoid collisions
+def chart_key(name, diff, part):
+    return f"{name}␟{diff}␟{part}"  # unit separator to avoid collisions
 
 
-def load_players(version):
-    path = os.path.join(RAW_DIR, f"players_drum_{version}.jsonl")
+def chart_part(rec, instrument):
+    """Canonical part code for a raw chart record. DrumMania collapses to a single
+    part ("D") so its catalog is unchanged; GuitarFreaks keeps the real G/B part."""
+    single = SINGLE_PART.get(instrument)
+    if single is not None:
+        return single
+    return rec.get("part") or DEFAULT_PART.get(instrument, "G")
+
+
+def load_players(version, instrument="drum"):
+    path = os.path.join(RAW_DIR, f"players_{instrument}_{version}.jsonl")
     players = []
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
@@ -58,33 +79,29 @@ def load_players(version):
     return players
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--version", default="galaxywave_delta")
-    ap.add_argument("--min-support", type=int, default=5,
-                    help="charts held by fewer than this many players are kept in the "
-                         "catalog but flagged low-support (excluded from similarity space)")
-    ap.add_argument("--svd-dim", type=int, default=32)
-    args = ap.parse_args()
-    version = args.version
+def build(version="galaxywave_delta", instrument="drum", min_support=5, svd_dim=32):
+    """Build the analysis artifacts for one (version, instrument) into
+    processed/<version>/<instrument>/. Returns the output directory path."""
+    skill_field = SKILLPOINT_FIELD.get(instrument, "drumSkillPoint")
 
-    players = load_players(version)
+    players = load_players(version, instrument)
     # keep only players with a full-ish sheet and positive skill
-    players = [p for p in players if (p.get("drumSkillPoint") or 0) > 0
+    players = [p for p in players if (p.get(skill_field) or 0) > 0
                and (p.get("hot", {}).get("data") or p.get("other", {}).get("data"))]
     P = len(players)
-    print(f"[build] players: {P}")
+    print(f"[build] instrument={instrument} players: {P}")
 
     # ---- pass 1: gather charts + per-chart raw stats ----
     chart_meta = {}  # key -> dict
     for p in players:
         for pool in ("hot", "other"):
             for r in (p.get(pool, {}).get("data") or []):
-                k = chart_key(r["name"], r["diff"])
+                part = chart_part(r, instrument)
+                k = chart_key(r["name"], r["diff"], part)
                 m = chart_meta.get(k)
                 if m is None:
                     m = {
-                        "name": r["name"], "diff": r["diff"],
+                        "name": r["name"], "diff": r["diff"], "part": part,
                         "levels": [], "skills": [], "achs": [],
                         "pool_hot": 0, "pool_other": 0,
                     }
@@ -100,7 +117,7 @@ def main():
 
     chart_keys = list(chart_meta.keys())
     chart_keys.sort(key=lambda k: (-(chart_meta[k]["pool_hot"] + chart_meta[k]["pool_other"]),
-                                    chart_meta[k]["name"]))
+                                    chart_meta[k]["name"], chart_meta[k]["part"]))
     chart_index = {k: i for i, k in enumerate(chart_keys)}
     C = len(chart_keys)
     print(f"[build] distinct charts: {C}")
@@ -119,6 +136,7 @@ def main():
             "id": i,
             "name": m["name"],
             "diff": m["diff"],
+            "part": m["part"],
             "level": round(level, 2),
             "pool": "hot" if is_hot else "other",
             "count": count,
@@ -141,7 +159,8 @@ def main():
         hot_vals, other_vals = [], []
         for pool in ("hot", "other"):
             for r in (p.get(pool, {}).get("data") or []):
-                ci = chart_index[chart_key(r["name"], r["diff"])]
+                part = chart_part(r, instrument)
+                ci = chart_index[chart_key(r["name"], r["diff"], part)]
                 sv = float(r.get("skill_value") or 0.0)
                 skill_mat[pi, ci] = sv
                 presence[pi, ci] = 1
@@ -155,7 +174,7 @@ def main():
             "id": pi,
             "playerId": p.get("playerId"),
             "name": p.get("playerName"),
-            "sp": round(float(p.get("drumSkillPoint") or 0.0), 2),
+            "sp": round(float(p.get(skill_field) or 0.0), 2),
             "hotPoint": round(float(p.get("hot", {}).get("point") or 0.0), 2),
             "otherPoint": round(float(p.get("other", {}).get("point") or 0.0), 2),
             "hotCount": len(hot_vals),
@@ -174,8 +193,8 @@ def main():
     var = np.clip(var, 1e-6, None)
     stds = np.sqrt(var)
 
-    support_mask = counts >= args.min_support      # charts usable for similarity space
-    print(f"[build] charts with support>={args.min_support}: {int(support_mask.sum())}")
+    support_mask = counts >= min_support      # charts usable for similarity space
+    print(f"[build] charts with support>={min_support}: {int(support_mask.sum())}")
 
     # ---- z-scored matrix over supported charts (0 where absent) ----
     z = np.zeros_like(skill_mat)
@@ -188,7 +207,7 @@ def main():
     # L2-normalize each player's z vector first so SVD captures style direction,
     # not magnitude (overall level).
     zn = normalize(z_present, norm="l2", axis=1)
-    dim = min(args.svd_dim, max(2, min(P, int(support_mask.sum())) - 1))
+    dim = min(svd_dim, max(2, min(P, int(support_mask.sum())) - 1))
     svd = TruncatedSVD(n_components=dim, random_state=42)
     emb = svd.fit_transform(zn).astype(np.float32)           # P x dim
     emb = normalize(emb, norm="l2", axis=1)
@@ -196,14 +215,14 @@ def main():
           f"{float(svd.explained_variance_ratio_.sum()):.3f}")
 
     # ---- kasegi summary (bracket -> {hot:[{chart,...}], other:[...]}) ----
-    kasegi_path = os.path.join(RAW_DIR, f"kasegi_drum_{version}.json")
+    kasegi_path = os.path.join(RAW_DIR, f"kasegi_{instrument}_{version}.json")
     kasegi = []
     if os.path.exists(kasegi_path):
         with open(kasegi_path, "r", encoding="utf-8") as f:
             kasegi = json.load(f)
 
     # ---- write artifacts ----
-    out = os.path.join(PROC_DIR, version)
+    out = os.path.join(PROC_DIR, version, instrument)
     os.makedirs(out, exist_ok=True)
 
     with open(os.path.join(out, "charts.json"), "w", encoding="utf-8") as f:
@@ -230,16 +249,31 @@ def main():
     with open(os.path.join(out, "meta.json"), "w", encoding="utf-8") as f:
         json.dump({
             "version": version,
+            "instrument": instrument,
             "players": P,
             "charts": C,
             "supportCharts": int(support_mask.sum()),
-            "minSupport": args.min_support,
+            "minSupport": min_support,
             "svdDim": int(dim),
             "kasegiBrackets": [k["scope"] for k in kasegi],
             "builtAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }, f, ensure_ascii=False, indent=2)
 
     print(f"[build] wrote artifacts to {out}")
+    return out
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--version", default="galaxywave_delta")
+    ap.add_argument("--instrument", default="drum", choices=["drum", "guitar"])
+    ap.add_argument("--min-support", type=int, default=5,
+                    help="charts held by fewer than this many players are kept in the "
+                         "catalog but flagged low-support (excluded from similarity space)")
+    ap.add_argument("--svd-dim", type=int, default=32)
+    args = ap.parse_args()
+    build(version=args.version, instrument=args.instrument,
+          min_support=args.min_support, svd_dim=args.svd_dim)
 
 
 if __name__ == "__main__":

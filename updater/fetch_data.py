@@ -1,20 +1,26 @@
 """
-fetch_data.py — Download GITADORA DrumMania skill data from Gitadora Skill Viewer (gsv.fun).
+fetch_data.py — Download GITADORA skill data from Gitadora Skill Viewer (gsv.fun).
 
 Data source: gsv.fun GraphQL API (community site; players upload their official
-eAmusement skill sheets via a bookmarklet). We pull, for the target version:
-  1. The full player list (playerId, name, drumSkillPoint, updateDate)
-  2. Each player's full DrumMania skill table (HOT 25 + OTHER 25 songs, each with
-     skill_value / achievement% / chart level)
+eAmusement skill sheets via a bookmarklet). We pull, for the target version and
+instrument (DrumMania or GuitarFreaks):
+  1. The full player list (playerId, name, drumSkillPoint, guitarSkillPoint, ...)
+  2. Each player's full skill table (HOT 25 + OTHER 25 songs, each with
+     skill_value / achievement% / chart level / part)
   3. The "kasegi" aggregate tables (per 500-point skill bracket: which songs the
      players in that bracket actually use for skill, and the average skill earned)
+
+DrumMania (`type:d`, field `drumSkill`) is the default; GuitarFreaks (`type:g`,
+field `guitarSkill`) is selected with `--instrument guitar`. Raw files are scoped
+by instrument: players_<instrument>_<version>.jsonl / kasegi_<instrument>_<version>.json.
 
 Uses only the Python standard library (urllib) so it runs with zero pip installs.
 Resumable: per-player results are appended to a JSONL cache; rerunning skips
 players already fetched.
 
 Usage:
-  python pipeline/fetch_data.py [--version galaxywave_delta] [--workers 12]
+  python pipeline/fetch_data.py [--version galaxywave_delta]
+                                [--instrument drum|guitar] [--workers 12]
 """
 
 import argparse
@@ -35,12 +41,59 @@ ROOT = os.path.dirname(HERE)
 DATA_BASE = os.environ.get("GD_DATA_DIR") or os.path.join(ROOT, "data")
 RAW_DIR = os.path.join(DATA_BASE, "raw")
 
+# Per-instrument gsv schema knobs. `type` selects the game; `skillField` is the
+# per-user skill table field; `skillPoint` is the scalar skillpoint key. The
+# guitar field names mirror gsv's drum schema by symmetry (the `users` query
+# already exposes both drumSkillPoint and guitarSkillPoint) — confirm `guitarSkill`
+# against a live response if a guitar fetch ever returns empty sheets.
+INSTRUMENTS = {
+    "drum":   {"type": "d", "skillField": "drumSkill",   "skillPoint": "drumSkillPoint"},
+    "guitar": {"type": "g", "skillField": "guitarSkill", "skillPoint": "guitarSkillPoint"},
+}
+
 _print_lock = threading.Lock()
 
 
 def log(msg):
     with _print_lock:
         print(msg, flush=True)
+
+
+def players_filename(version, instrument):
+    return os.path.join(RAW_DIR, f"players_{instrument}_{version}.jsonl")
+
+
+def kasegi_filename(version, instrument):
+    return os.path.join(RAW_DIR, f"kasegi_{instrument}_{version}.json")
+
+
+def user_skill_query(player_id, version, instrument):
+    """Build the per-user skill GraphQL query for an instrument."""
+    cfg = INSTRUMENTS[instrument]
+    return (
+        f"{{ user(playerId:{player_id}, type:{cfg['type']}, version: {version}) {{"
+        f" playerName {cfg['skillPoint']} updateDate"
+        f" {cfg['skillField']} {{"
+        f"   hot   {{ point data {{ name part diff skill_value achive_value diff_value }} }}"
+        f"   other {{ point data {{ name part diff skill_value achive_value diff_value }} }}"
+        f" }} }} }}"
+    )
+
+
+def make_record(full, u, instrument):
+    """Normalise a fetched `user` payload into the raw JSONL record. Carries the
+    instrument's own skillpoint field (drumSkillPoint / guitarSkillPoint)."""
+    cfg = INSTRUMENTS[instrument]
+    skill_point = cfg["skillPoint"]
+    skill = (full.get(cfg["skillField"]) or {})
+    return {
+        "playerId": u["playerId"],
+        "playerName": full.get("playerName") or u.get("playerName"),
+        skill_point: full.get(skill_point),
+        "updateDate": full.get("updateDate") or u.get("updateDate"),
+        "hot": skill.get("hot") or {"point": 0, "data": []},
+        "other": skill.get("other") or {"point": 0, "data": []},
+    }
 
 
 def gql(query, retries=4, timeout=40):
@@ -82,25 +135,18 @@ def fetch_user_list(version):
     return users
 
 
-def fetch_user_skill(player_id, version):
-    data = gql(
-        f"""{{ user(playerId:{player_id}, type:d, version: {version}) {{
-            playerName drumSkillPoint updateDate
-            drumSkill {{
-              hot   {{ point data {{ name part diff skill_value achive_value diff_value }} }}
-              other {{ point data {{ name part diff skill_value achive_value diff_value }} }}
-            }}
-        }} }}"""
-    )
+def fetch_user_skill(player_id, version, instrument):
+    data = gql(user_skill_query(player_id, version, instrument))
     return data["user"]
 
 
-def fetch_kasegi(version, scopes):
+def fetch_kasegi(version, instrument, scopes):
+    cfg = INSTRUMENTS[instrument]
     out = []
     for s in scopes:
         try:
             data = gql(
-                f"""{{ kasegiNew(scope:{s}, type:d, version: {version}) {{
+                f"""{{ kasegiNew(scope:{s}, type:{cfg['type']}, version: {version}) {{
                     scope count
                     hot   {{ name diff part diffValue averageSkill count averagePlayerSKill }}
                     other {{ name diff part diffValue averageSkill count averagePlayerSKill }}
@@ -135,22 +181,25 @@ def load_done_ids(jsonl_path):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--version", default="galaxywave_delta")
+    ap.add_argument("--instrument", default="drum", choices=list(INSTRUMENTS))
     ap.add_argument("--workers", type=int, default=12)
     ap.add_argument("--min-skill", type=float, default=0.01,
-                    help="skip players whose drumSkillPoint is below this")
+                    help="skip players whose skillPoint is below this")
     args = ap.parse_args()
 
     os.makedirs(RAW_DIR, exist_ok=True)
     version = args.version
+    instrument = args.instrument
+    skill_point = INSTRUMENTS[instrument]["skillPoint"]
 
     users = fetch_user_list(version)
     with open(os.path.join(RAW_DIR, f"users_{version}.json"), "w", encoding="utf-8") as f:
         json.dump(users, f, ensure_ascii=False)
 
-    targets = [u for u in users if (u.get("drumSkillPoint") or 0) >= args.min_skill]
-    log(f"[plan] {len(targets)} players have DrumMania skill >= {args.min_skill}")
+    targets = [u for u in users if (u.get(skill_point) or 0) >= args.min_skill]
+    log(f"[plan] {len(targets)} players have {instrument} skill >= {args.min_skill}")
 
-    jsonl_path = os.path.join(RAW_DIR, f"players_drum_{version}.jsonl")
+    jsonl_path = players_filename(version, instrument)
     done = load_done_ids(jsonl_path)
     if done:
         log(f"[resume] {len(done)} players already cached, skipping those")
@@ -164,15 +213,8 @@ def main():
     def work(u):
         pid = u["playerId"]
         try:
-            full = fetch_user_skill(pid, version)
-            rec = {
-                "playerId": pid,
-                "playerName": full.get("playerName") or u.get("playerName"),
-                "drumSkillPoint": full.get("drumSkillPoint"),
-                "updateDate": full.get("updateDate") or u.get("updateDate"),
-                "hot": (full.get("drumSkill") or {}).get("hot") or {"point": 0, "data": []},
-                "other": (full.get("drumSkill") or {}).get("other") or {"point": 0, "data": []},
-            }
+            full = fetch_user_skill(pid, version, instrument)
+            rec = make_record(full, u, instrument)
             with write_lock:
                 with open(jsonl_path, "a", encoding="utf-8") as f:
                     f.write(json.dumps(rec, ensure_ascii=False) + "\n")
@@ -200,8 +242,8 @@ def main():
 
     # kasegi aggregate tables (skill brackets in 500-pt steps)
     scopes = list(range(1500, 9500, 500))
-    kasegi = fetch_kasegi(version, scopes)
-    with open(os.path.join(RAW_DIR, f"kasegi_drum_{version}.json"), "w", encoding="utf-8") as f:
+    kasegi = fetch_kasegi(version, instrument, scopes)
+    with open(kasegi_filename(version, instrument), "w", encoding="utf-8") as f:
         json.dump(kasegi, f, ensure_ascii=False)
     log(f"[done] kasegi brackets={len(kasegi)} written")
 

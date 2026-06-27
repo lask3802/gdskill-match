@@ -1,0 +1,5 @@
+# upload_fn/ Cloud Function deps — FUNCTION-ONLY (not the read-only server's).
+# The server itself stays stdlib + numpy/scipy/sklearn; these are added only for
+# this standalone HTTP function's runtime.
+google-cloud-storage>=2.10
+functions-framework>=3.5
