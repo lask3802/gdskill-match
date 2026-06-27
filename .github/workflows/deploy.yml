@@ -1,0 +1,70 @@
+name: Deploy to Cloud Run
+
+# Auto-deploy the serving app to Cloud Run when a GitHub Release is published
+# (also runnable manually). Authentication is keyless via Workload Identity
+# Federation — no service-account JSON key is stored in this public repo.
+#
+# One-time setup (configure these as repository *Variables*, Settings → Secrets
+# and variables → Actions → Variables — they are NOT secrets):
+#   GCP_PROJECT_ID      e.g. gdskill-match
+#   GCP_WIF_PROVIDER    full resource name of the Workload Identity *provider*,
+#                       e.g. projects/123456789/locations/global/workloadIdentityPools/github/providers/github
+#   GCP_DEPLOY_SA       deployer service-account email,
+#                       e.g. gh-deployer@gdskill-match.iam.gserviceaccount.com
+#   GCS_BUCKET          artifacts bucket (e.g. gdskill-match-artifacts)
+# Optional Variables (sensible defaults shown):
+#   GCP_REGION=asia-east1  GCP_SERVICE=gdskill  GCP_MAX_INSTANCES=2
+#   GD_VERSION=galaxywave_delta  GD_INSTRUMENTS=drum,guitar
+#
+# The one-time WIF + IAM setup commands are documented in docs/deployment.md.
+# Until GCP_PROJECT_ID / GCP_WIF_PROVIDER / GCP_DEPLOY_SA are set, the deploy job
+# is skipped (a release still publishes cleanly — no failed run).
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+# Never run two deploys at once; cancel the older one.
+concurrency:
+  group: deploy-cloud-run
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy serving app
+    if: ${{ vars.GCP_PROJECT_ID != '' && vars.GCP_WIF_PROVIDER != '' && vars.GCP_DEPLOY_SA != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write        # required for Workload Identity Federation
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        name: Authenticate to Google Cloud (keyless / WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy Cloud Run service
+        run: |
+          gcloud run deploy "${{ vars.GCP_SERVICE || 'gdskill' }}" \
+            --source . \
+            --project "${{ vars.GCP_PROJECT_ID }}" \
+            --region "${{ vars.GCP_REGION || 'asia-east1' }}" \
+            --allow-unauthenticated \
+            --memory 1Gi --cpu 1 --timeout 300 --concurrency 40 \
+            --max-instances "${{ vars.GCP_MAX_INSTANCES || '2' }}" \
+            --set-env-vars "GCS_BUCKET=${{ vars.GCS_BUCKET }},GD_VERSION=${{ vars.GD_VERSION || 'galaxywave_delta' }},GD_INSTRUMENTS=${{ vars.GD_INSTRUMENTS || 'drum,guitar' }}"
+
+      - name: Show service URL
+        run: |
+          gcloud run services describe "${{ vars.GCP_SERVICE || 'gdskill' }}" \
+            --project "${{ vars.GCP_PROJECT_ID }}" \
+            --region "${{ vars.GCP_REGION || 'asia-east1' }}" \
+            --format='value(status.url)'

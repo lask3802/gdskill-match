@@ -82,3 +82,74 @@
 ## 一句話總結
 
 > 低流量 + 每日批次 + 想 on-demand 又不想改程式 → **GCP Cloud Run（服務）+ Cloud Scheduler/Cloud Run Job（每日掃描）+ GCS（artifacts）**，月費約 **$0**；網域先用免費子網域，正式上線再買 Cloudflare 成本價網域。願意改寫成 JS 的話，**Cloudflare 全家桶**是長期最省、最快、DNS 最強的選擇。
+
+---
+
+## 發 Release 自動部署（GitHub Actions）
+
+`.github/workflows/deploy.yml`：每當在 GitHub **發布 Release** 就會自動把服務部署到
+Cloud Run（也可在 Actions 頁手動 `workflow_dispatch`）。採 **Workload Identity
+Federation（WIF，無金鑰）**——公開 repo 不存任何 service-account JSON 金鑰。
+
+設定好之前，deploy job 會自動**跳過**（發 Release 不會出現失敗的紅叉）；設好下列
+repo **Variables** 後，下一次 Release 即會真正部署。
+
+### 需要的 repo Variables（Settings → Secrets and variables → Actions → Variables）
+
+| 變數 | 範例 | 說明 |
+|---|---|---|
+| `GCP_PROJECT_ID` | `gdskill-match` | GCP 專案 ID |
+| `GCP_WIF_PROVIDER` | `projects/123456789/locations/global/workloadIdentityPools/github/providers/github` | WIF provider 完整資源名 |
+| `GCP_DEPLOY_SA` | `gh-deployer@gdskill-match.iam.gserviceaccount.com` | 部署用 service account |
+| `GCS_BUCKET` | `gdskill-match-artifacts` | 分析檔 bucket |
+| 選用 | | `GCP_REGION`(asia-east1)、`GCP_SERVICE`(gdskill)、`GCP_MAX_INSTANCES`(2)、`GD_VERSION`(galaxywave_delta)、`GD_INSTRUMENTS`(drum,guitar) |
+
+> 設 `GD_INSTRUMENTS=drum,guitar` 後，Cloud Run 服務首次啟動時 `cloudstore.ensure_artifacts`
+> 會自動補建尚未存在於 GCS 的 GuitarFreaks 分析檔（一次較慢的冷啟動），之後即就緒。
+> 每日 updater 函式也請設相同的 `GD_INSTRUMENTS` 以持續更新兩種曲種。
+
+### 一次性建立 WIF + 部署 SA（在已 `gcloud auth login` 的機器上跑）
+
+```bash
+PROJECT_ID=gdskill-match
+REPO=lask3802/gdskill-match
+PROJNUM=$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')
+
+# 1) 部署用 service account + 權限（Cloud Run deploy 走 Cloud Build / GCS / Artifact Registry）
+gcloud iam service-accounts create gh-deployer --project "$PROJECT_ID" \
+  --display-name="GitHub Actions deployer"
+SA="gh-deployer@${PROJECT_ID}.iam.gserviceaccount.com"
+for ROLE in roles/run.admin roles/cloudbuild.builds.editor roles/artifactregistry.admin \
+            roles/storage.admin roles/iam.serviceAccountUser; do
+  gcloud projects add-iam-policy-binding "$PROJECT_ID" --member="serviceAccount:$SA" --role="$ROLE"
+done
+
+# 2) Workload Identity Pool + GitHub OIDC provider（限定只有本 repo 能換得權杖）
+gcloud iam workload-identity-pools create github --project "$PROJECT_ID" --location=global \
+  --display-name="GitHub Actions"
+gcloud iam workload-identity-pools providers create-oidc github --project "$PROJECT_ID" \
+  --location=global --workload-identity-pool=github --display-name="GitHub OIDC" \
+  --issuer-uri="https://token.actions.githubusercontent.com" \
+  --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository" \
+  --attribute-condition="assertion.repository=='${REPO}'"
+
+# 3) 允許本 repo 透過 WIF 扮演部署 SA
+gcloud iam service-accounts add-iam-policy-binding "$SA" --project "$PROJECT_ID" \
+  --role=roles/iam.workloadIdentityUser \
+  --member="principalSet://iam.googleapis.com/projects/${PROJNUM}/locations/global/workloadIdentityPools/github/attribute.repository/${REPO}"
+
+# 4) 把這個值填到 repo 變數 GCP_WIF_PROVIDER：
+echo "projects/${PROJNUM}/locations/global/workloadIdentityPools/github/providers/github"
+```
+
+也可用 `gh` 直接設定變數：
+
+```bash
+gh variable set GCP_PROJECT_ID  -b "gdskill-match"
+gh variable set GCP_DEPLOY_SA   -b "gh-deployer@gdskill-match.iam.gserviceaccount.com"
+gh variable set GCS_BUCKET      -b "gdskill-match-artifacts"
+gh variable set GCP_WIF_PROVIDER -b "projects/<PROJNUM>/locations/global/workloadIdentityPools/github/providers/github"
+```
+
+`deploy.sh` 仍可作為首次「從零建立」整套基礎設施（專案／billing／APIs／bucket／排程函式）的腳本；
+之後日常部署交給上面的 Release workflow 即可。
