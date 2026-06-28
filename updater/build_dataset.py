@@ -74,23 +74,33 @@ def build_name_canon(name_dp_counts):
     and '…キッス♡…' as '…キッス?…'. Because charts are keyed by exact name, the two
     spellings otherwise split one chart into two.
 
-    `name_dp_counts` maps (name, diff, part) -> occurrence count. Returns a remap
-    {(name, diff, part): canonical_name} for every '?'-bearing name that has a
-    sibling of the SAME (diff, part) and length, identical except a non-ASCII
-    character fills each '?' position. Titles with a legitimate literal '?' (no
-    such sibling — e.g. '誰?', "What's up?") are absent from the remap and left
-    unchanged. Ambiguous matches resolve to the most common spelling, deterministically."""
-    by_dp = {}
-    for (name, diff, part) in name_dp_counts:
-        by_dp.setdefault((diff, part), []).append(name)
+    Works at the SONG-TITLE level: a '?'-spelling is matched to a clean sibling
+    that is identical except a non-ASCII character fills each '?' position; once
+    learned, the correction applies to EVERY chart carrying that '?'-spelling — so
+    a difficulty/part where only the mojibake spelling has holders (no same-diff
+    sibling) is fixed too. Charts still stay distinct by difficulty/part because
+    the corrected name only feeds chart_key, which also keys on (diff, part).
 
-    remap = {}
-    for (name, diff, part) in name_dp_counts:
+    `name_dp_counts` maps (name, diff, part) -> occurrence count. Returns a remap
+    {(name, diff, part): canonical_name}. Titles with a legitimate literal '?' (no
+    non-ASCII sibling anywhere — '誰?', "What's up?", 'LUCKY? STAFF', …) are left
+    unchanged. Ambiguous matches resolve to the most common spelling, deterministically."""
+    # song-title level: total occurrences per name + the set of clean spellings
+    name_counts = {}
+    clean_names = set()
+    for (name, _diff, _part), cnt in name_dp_counts.items():
+        name_counts[name] = name_counts.get(name, 0) + cnt
+        if "?" not in name:
+            clean_names.add(name)
+
+    # learn a canonical clean spelling for each '?'-bearing title
+    name_canon = {}
+    for name in name_counts:
         if "?" not in name:
             continue
         sibs = []
-        for cand in by_dp.get((diff, part), ()):
-            if cand == name or "?" in cand or len(cand) != len(name):
+        for cand in clean_names:
+            if len(cand) != len(name):
                 continue
             ok = True
             for a, b in zip(name, cand):
@@ -103,12 +113,11 @@ def build_name_canon(name_dp_counts):
                     break
             if ok:
                 sibs.append(cand)
-        if not sibs:
-            continue                            # genuine literal '?': leave as-is
-        # most common spelling wins; name as a stable tiebreaker
-        remap[(name, diff, part)] = max(
-            sibs, key=lambda s: (name_dp_counts.get((s, diff, part), 0), s))
-    return remap
+        if sibs:                                # most common spelling wins; stable tiebreak
+            name_canon[name] = max(sibs, key=lambda s: (name_counts.get(s, 0), s))
+
+    # expand the title-level correction to every (name, diff, part) that carries it
+    return {key: name_canon[key[0]] for key in name_dp_counts if key[0] in name_canon}
 
 
 def load_players(version, instrument="drum"):

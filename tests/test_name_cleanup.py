@@ -39,11 +39,25 @@ def test_canon_merges_mojibake_and_preserves_literal_question():
     assert ("チョンマゲ航空①便", "MAS", "D") not in remap
 
 
-def test_canon_does_not_merge_across_difficulty_or_part():
+def test_canon_corrects_name_even_without_same_difficulty_sibling():
+    """Title-level: the clean spelling learned from one difficulty is applied to a
+    difficulty/part where only the '?'-spelling has holders (the 'straggler' case).
+    The corrected name still keys per-(diff, part), so charts stay distinct."""
     import pipeline.build_dataset as bd
     counts = {
-        ("A①B", "MAS", "D"): 5,
-        ("A?B", "EXT", "D"): 2,   # different diff → not a sibling
+        ("A①B", "MAS", "D"): 5,   # clean spelling only at MAS
+        ("A?B", "EXT", "D"): 2,   # mojibake spelling only at EXT — no same-diff sibling
+    }
+    assert bd.build_name_canon(counts) == {("A?B", "EXT", "D"): "A①B"}
+
+
+def test_canon_ignores_ascii_fill_and_length_mismatch():
+    import pipeline.build_dataset as bd
+    counts = {
+        ("ABC", "MAS", "D"): 5,    # ASCII char where '?' sits → not a mojibake sibling
+        ("AB?", "MAS", "D"): 2,
+        ("X①YZ", "MAS", "D"): 5,   # different length → not a sibling
+        ("X?Y", "MAS", "D"): 2,
     }
     assert bd.build_name_canon(counts) == {}
 
