@@ -60,7 +60,7 @@ jobs:
             --allow-unauthenticated \
             --memory 1Gi --cpu 1 --timeout 300 --concurrency 40 \
             --max-instances "${{ vars.GCP_MAX_INSTANCES || '2' }}" \
-            --set-env-vars "GCS_BUCKET=${{ vars.GCS_BUCKET }},GD_VERSION=${{ vars.GD_VERSION || 'galaxywave_delta' }},GD_INSTRUMENTS=${{ vars.GD_INSTRUMENTS || 'drum,guitar' }}"
+            --set-env-vars "^##^GCS_BUCKET=${{ vars.GCS_BUCKET }}##GD_VERSION=${{ vars.GD_VERSION || 'galaxywave_delta' }}##GD_INSTRUMENTS=${{ vars.GD_INSTRUMENTS || 'drum,guitar' }}"
 
       - name: Show service URL
         run: |
