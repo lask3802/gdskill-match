@@ -236,6 +236,12 @@ function setupHistory() {
     // param canonically means drum — default to that, not the current INST, or
     // backing into a drum entry while on guitar would load the wrong player.
     const inst = url.searchParams.get("inst") || "drum";
+    const pid = url.searchParams.get("p");
+    // A hash-only navigation (e.g. the #songs / #rivals subnav quick-jump links)
+    // also fires popstate, but the player has not changed — reloading it here would
+    // reset scroll and kill the jump. Skip when player + instrument are unchanged
+    // and let the browser perform the native fragment scroll.
+    if (inst === INST && pid != null && Number(pid) === CURRENT_ID) return;
     if (inst !== INST) {
       INST = inst;
       META = await fetchMeta();
@@ -245,7 +251,6 @@ function setupHistory() {
       renderInstSel();
     }
     closeModal();
-    const pid = url.searchParams.get("p");
     if (pid != null) loadPlayer(+pid, { hist: "none" });
     else loadDefault({ hist: "none" });
   });
