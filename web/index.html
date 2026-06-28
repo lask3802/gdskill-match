@@ -17,7 +17,14 @@
         <div class="datadate" id="dataDate"></div>
       </div>
     </div>
-    <div class="topctl">
+    <button class="hamburger" id="hamburger" type="button"
+            aria-controls="topctl" aria-expanded="false" aria-label="Menu">
+      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"
+           fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <path d="M4 7h16M4 12h16M4 17h16"/>
+      </svg>
+    </button>
+    <div class="topctl" id="topctl">
       <div class="instsel" id="instsel"></div>
       <a class="ghlink" id="ghlink" href="https://github.com/lask3802/gdskill-match/issues"
          target="_blank" rel="noopener" aria-label="GitHub Issues">
@@ -44,7 +51,6 @@
     <a href="#similar" data-i18n="navSimilar">相似玩家</a>
     <a href="#rivals" data-i18n="navRivals">對手推薦</a>
     <a href="#songs" data-i18n="navSongs">選曲推薦</a>
-    <a href="#upload" data-i18n="navUpload">上傳資料</a>
   </nav>
 
   <main class="wrap" id="app">

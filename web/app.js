@@ -116,9 +116,7 @@ function applyStatic() {
   const inp = $("#search"); if (inp) inp.placeholder = t("searchPlaceholder");
   document.querySelectorAll("[data-i18n]").forEach(e => { e.textContent = t(e.dataset.i18n); });
   const gh = $("#ghlink"); if (gh) gh.title = t("ghIssuesTitle");
-  // Upload is DrumMania-only this round — hide its nav link for other instruments.
-  const upNav = document.querySelector('.subnav a[href="#upload"]');
-  if (upNav) upNav.style.display = INST === "drum" ? "" : "none";
+  const ham = $("#hamburger"); if (ham) ham.setAttribute("aria-label", t("menu"));
   if (META) {
     $("#metaSub").textContent = t("metaSub", { inst: instName(META.instrument || INST), version: META.versionName, players: fmt(META.players), charts: fmt(META.charts) });
     if (META.builtAt) $("#dataDate").textContent = t("dataUpdated", { date: twDate(META.builtAt) });
@@ -141,7 +139,7 @@ function changeLang(l) {
   renderLangSel();
   renderInstSel();
   closeModal();
-  if (CURRENT_ID != null) loadPlayer(CURRENT_ID); else loadDefault();
+  if (CURRENT_ID != null) loadPlayer(CURRENT_ID, { hist: "replace" }); else loadDefault();
 }
 
 const INST_SHORT = { drum: "DM", guitar: "GF" };
@@ -190,15 +188,67 @@ async function boot() {
   renderLangSel();
   renderInstSel();
   setupSearch();
-  $("#brand").onclick = () => loadDefault();
+  setupHamburger();
+  setupHistory();
+  $("#brand").onclick = () => loadDefault({ hist: "push" });
   const pid = url.searchParams.get("p");
-  if (pid != null) return loadPlayer(+pid);
+  if (pid != null) return loadPlayer(+pid, { hist: "replace" });
   loadDefault();
 }
 
-async function loadDefault() {
+async function loadDefault({ hist = "replace" } = {}) {
   const r = await api(withInst("/api/top"));
-  if (r.results && r.results.length) loadPlayer(r.results[0].id);
+  if (r.results && r.results.length) loadPlayer(r.results[0].id, { hist });
+}
+
+/* ---------------- mobile control dropdown ---------------- */
+// On narrow screens the instrument / language / GitHub controls collapse into a
+// dropdown the hamburger toggles. Listeners are delegated to #topctl so they
+// survive the innerHTML rebuilds in renderInstSel / renderLangSel.
+function setupHamburger() {
+  const btn = $("#hamburger"), ctl = $("#topctl");
+  if (!btn || !ctl) return;
+  const setOpen = open => {
+    // On close, return focus to the trigger if it was inside the menu — the
+    // dropdown is display:none'd, which would otherwise drop focus to <body>.
+    if (!open && ctl.contains(document.activeElement)) btn.focus();
+    ctl.classList.toggle("open", open);
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
+  };
+  btn.addEventListener("click", e => { e.stopPropagation(); setOpen(!ctl.classList.contains("open")); });
+  // Picking any control (instrument / language / GitHub) closes the menu.
+  ctl.addEventListener("click", e => { if (e.target.closest("button, a")) setOpen(false); });
+  // Click outside or Escape closes it.
+  document.addEventListener("click", e => {
+    if (!e.target.closest("#topctl") && !e.target.closest("#hamburger")) setOpen(false);
+  });
+  document.addEventListener("keydown", e => { if (e.key === "Escape") setOpen(false); });
+}
+
+/* ---------------- back/forward navigation ----------------
+   Player jumps pushState a new history entry, so the browser Back button returns
+   to the previously-viewed player; popstate replays whatever the URL now names
+   without pushing again. */
+function setupHistory() {
+  window.addEventListener("popstate", async () => {
+    const url = new URL(location.href);
+    // Drum history entries omit ?inst= (see loadPlayer's histUrl), so a missing
+    // param canonically means drum — default to that, not the current INST, or
+    // backing into a drum entry while on guitar would load the wrong player.
+    const inst = url.searchParams.get("inst") || "drum";
+    if (inst !== INST) {
+      INST = inst;
+      META = await fetchMeta();
+      INST = META.instrument || inst;
+      saveInst(INST);
+      applyStatic();
+      renderInstSel();
+    }
+    closeModal();
+    const pid = url.searchParams.get("p");
+    if (pid != null) loadPlayer(+pid, { hist: "none" });
+    else loadDefault({ hist: "none" });
+  });
 }
 
 /* ---------------- search ---------------- */
@@ -228,7 +278,7 @@ function setupSearch() {
 }
 
 /* ---------------- load + render ---------------- */
-async function loadPlayer(id) {
+async function loadPlayer(id, { hist = "push" } = {}) {
   const app = $("#app");
   CURRENT_ID = id;
   app.innerHTML = `<div class="loading"><span class="spin"></span> ${t("analyzing")}</div>`;
@@ -249,14 +299,15 @@ async function loadPlayer(id) {
     saveToken(id, { token, gsvPlayerId: data.profile.player.playerId,
                     visibility: data.profile.visibility || (stored && stored.visibility) || "private" });
   }
-  history.replaceState(null, "", INST === "drum" ? `?p=${id}` : `?p=${id}&inst=${INST}`);
+  const histUrl = INST === "drum" ? `?p=${id}` : `?p=${id}&inst=${INST}`;
+  if (hist === "push") history.pushState({ p: id }, "", histUrl);
+  else if (hist === "replace") history.replaceState({ p: id }, "", histUrl);
+  // hist === "none": URL was already set by popstate navigation.
   app.innerHTML = "";
   app.appendChild(renderHero(data.profile));
   app.appendChild(renderSimilar(data.similar, data.profile));
   app.appendChild(renderRivals(data.rivals, data.profile));
   app.appendChild(renderSongs(data.songs, data.profile));
-  // Full-data upload is DrumMania-only this round.
-  if (INST === "drum") app.appendChild(renderUpload(data.profile));
 }
 
 /* ---------------- hero / profile ---------------- */
@@ -676,155 +727,6 @@ function renderChartModal(d) {
   });
   document.body.appendChild(overlay);
   document.addEventListener("keydown", _esc);
-}
-
-/* ---------------- upload full official data (spec §4.4, §5, §9) ---------------- */
-// Build the drag-to-bookmarks loader for the current player. It injects
-// /bookmarklet.js into the authenticated e-amusement tab and runs it with an
-// upload spec carrying this player's identity (so the server can self-attest
-// link the result). No uploadUrl => the bookmarklet downloads a JSON file, which
-// the player then submits through the same-origin file uploader below (MVP path).
-function bookmarkletHref(pl) {
-  const spec = {
-    version: (META && META.version) || "galaxywave_delta",
-    gsvPlayerId: pl.playerId,
-    profile: { playerName: pl.name, drumSkillPoint: pl.sp },
-    mode: "standard",
-    detailCap: 120,
-  };
-  const src = location.origin + "/bookmarklet.js";
-  return "javascript:(function(){var d=document,s=d.createElement('script');"
-    + "s.src=" + JSON.stringify(src) + ";"
-    + "s.onload=function(){GDSkillBookmarklet.run(" + JSON.stringify(spec) + ");};"
-    + "d.body.appendChild(s);})();";
-}
-
-function renderUpload(prof) {
-  const sec = el("section", "section"); sec.id = "upload";
-  const pl = prof.player;
-  sec.appendChild(el("div", "head", `<span class="idx">05</span><h2>${t("secUpload")} ${help(t("uploadHelp"))}</h2>
-    <span class="note">${t("uploadNote")}</span>`));
-
-  const box = el("div", "upload-box");
-  box.innerHTML = `
-    <ol class="upload-steps">
-      <li>
-        <div class="ust">${t("uploadStep1Title")}</div>
-        <div class="usb">${t("uploadStep1Body")}</div>
-        <div class="bm-wrap"></div>
-      </li>
-      <li>
-        <div class="ust">${t("uploadStep2Title")}</div>
-        <div class="usb">${t("uploadStep2Body")}</div>
-      </li>
-      <li>
-        <div class="ust">${t("uploadStep3Title")}</div>
-        <div class="usb">${t("uploadStep3Body")}</div>
-        <div class="file-row">
-          <input type="file" id="upfile" accept="application/json,.json" />
-          <button class="ubtn" id="upbtn">${t("uploadSubmit")}</button>
-        </div>
-      </li>
-    </ol>
-    <div class="upload-result" id="upresult"></div>
-    <div class="upload-privacy">${t("uploadPrivacyNote")}</div>`;
-
-  // Bookmarklet anchor: set href via DOM property (not innerHTML) so the
-  // javascript: URL is preserved verbatim for drag-to-bookmark. Clicking it on
-  // this page would do nothing useful, so we suppress navigation and rely on drag.
-  const a = document.createElement("a");
-  a.className = "bm-link";
-  a.href = bookmarkletHref(pl);
-  a.textContent = t("uploadBookmarkletLabel");
-  a.title = t("uploadBookmarkletTitle");
-  a.draggable = true;
-  a.onclick = e => e.preventDefault();
-  box.querySelector(".bm-wrap").appendChild(a);
-
-  const fileInput = box.querySelector("#upfile");
-  const result = box.querySelector("#upresult");
-  box.querySelector("#upbtn").onclick = () => doUpload(fileInput, result);
-
-  sec.appendChild(box);
-
-  // If we hold this player's share token, surface the publish/visibility controls.
-  const tok = getToken(CURRENT_ID);
-  if (tok && tok.token) sec.appendChild(renderManage(prof, tok));
-  return sec;
-}
-
-async function doUpload(fileInput, result) {
-  const f = fileInput.files && fileInput.files[0];
-  if (!f) { result.innerHTML = `<div class="ures err">${t("uploadNoFile")}</div>`; return; }
-  let text, payload;
-  try { text = await f.text(); payload = JSON.parse(text); }
-  catch (e) { result.innerHTML = `<div class="ures err">${t("uploadBadJson")}</div>`; return; }
-  result.innerHTML = `<div class="ures">${t("uploadSending")}</div>`;
-  let r, body;
-  try {
-    r = await fetch("/api/upload", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: text,
-    });
-    body = await r.json();
-  } catch (e) {
-    result.innerHTML = `<div class="ures err">${t("uploadNetErr", { msg: esc(e.message) })}</div>`;
-    return;
-  }
-  if (r.status === 200 && body.status === "linked") {
-    const id = body.linkedDbId;
-    saveToken(id, { token: body.token, gsvPlayerId: body.gsvPlayerId, visibility: body.visibility });
-    const link = `?p=${id}&token=${encodeURIComponent(body.token)}`;
-    result.innerHTML =
-      `<div class="ures ok">${t("uploadResultLinked", { conf: Math.round((body.confidence || 0) * 100), charts: fmt(body.charts) })}</div>
-       <div class="ures token">${t("uploadTokenLabel")} <code>${esc(body.token)}</code></div>
-       <div class="ures"><a href="${link}">${t("uploadViewEnhanced")}</a></div>`;
-  } else if (r.status === 202 && body.status === "quarantined") {
-    result.innerHTML = `<div class="ures warn">${t("uploadResultQuarantined", { reason: esc(body.reason || ""), conf: Math.round((body.confidence || 0) * 100) })}</div>`;
-  } else {
-    const errs = (body && body.errors ? body.errors : [body && body.error || ("HTTP " + r.status)])
-      .map(esc).join("；");
-    result.innerHTML = `<div class="ures err">${t("uploadResultErrors", { errors: errs })}</div>`;
-  }
-}
-
-function renderManage(prof, tok) {
-  const wrap = el("div", "manage-box");
-  const vis = prof.visibility || tok.visibility || "private";
-  const isPublic = vis === "public";
-  const visTxt = isPublic ? t("visibilityPublic") : t("visibilityPrivate");
-  wrap.innerHTML = `
-    <div class="mb-h">${t("manageTitle")}</div>
-    <div class="mb-row">
-      <span>${t("visLabel")}: <b class="vis ${vis}">${visTxt}</b></span>
-      <button class="ubtn ${isPublic ? "danger" : ""}" id="pubbtn">${isPublic ? t("unpublishBtn") : t("publishBtn")}</button>
-    </div>
-    <div class="mb-note">${isPublic ? t("publicNote") : t("privateNote")}</div>
-    <div class="upload-result" id="manresult"></div>`;
-  const res = wrap.querySelector("#manresult");
-  wrap.querySelector("#pubbtn").onclick =
-    () => doPublish(tok.gsvPlayerId, tok.token, isPublic ? "private" : "public", res);
-  return wrap;
-}
-
-async function doPublish(gsvPlayerId, token, visibility, res) {
-  res.innerHTML = `<div class="ures">${t("publishSending")}</div>`;
-  let r, body;
-  try {
-    r = await fetch("/api/publish", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ gsvPlayerId, token, visibility }),
-    });
-    body = await r.json();
-  } catch (e) {
-    res.innerHTML = `<div class="ures err">${t("publishFail", { msg: esc(e.message) })}</div>`;
-    return;
-  }
-  if (r.ok && body.status === "ok") {
-    saveToken(CURRENT_ID, { token, gsvPlayerId, visibility });
-    loadPlayer(CURRENT_ID);   // re-render with the new visibility
-  } else {
-    res.innerHTML = `<div class="ures err">${t("publishFail", { msg: esc((body && body.error) || ("HTTP " + r.status)) })}</div>`;
-  }
 }
 
 boot();

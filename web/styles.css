@@ -106,6 +106,17 @@ a:hover { text-decoration: underline; }
 .ghlink { display: inline-flex; align-items: center; color: var(--muted); transition: color .15s; }
 .ghlink:hover { color: var(--ink); }
 
+/* hamburger toggle — collapses the control cluster on narrow screens.
+   Hidden on desktop; revealed in the max-width:860px media query below. */
+.hamburger {
+  display: none; align-items: center; justify-content: center; flex-shrink: 0;
+  width: 38px; height: 34px; padding: 0;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-sm);
+  color: var(--muted); cursor: pointer;
+}
+.hamburger:hover { color: var(--ink); border-color: var(--line-2); }
+.hamburger:focus-visible { outline: none; border-color: var(--teal); box-shadow: 0 0 0 3px rgba(52,220,201,.15); }
+
 /* GuitarFreaks guitar (G) / bass (B) part badge */
 .parttag { font-family: var(--mono); font-size: 9px; font-weight: 700; letter-spacing: .04em;
   padding: 1px 4px; border-radius: 3px; vertical-align: middle; }
@@ -459,14 +470,28 @@ a:hover { text-decoration: underline; }
   .stat-grid { grid-template-columns: repeat(2,1fr); }
   .pads-grid { grid-template-columns: repeat(5, 1fr); }
   .section > .head .note { display: none; }
-  .search-wrap { width: 46vw; }
   .readout { flex-wrap: wrap; gap: 10px; }
   .readout .big { font-size: 44px; }
   .readout .rank { width: 100%; }
   /* On narrow screens the section nav is what users navigate with — keep it pinned
-     to the very top; let the title bar (brand) scroll away to save vertical space. */
-  .topbar { position: static; }
+     to the very top; let the title bar (brand) scroll away to save vertical space.
+     `relative` (vs sticky) still scrolls away, while anchoring the .topctl dropdown. */
+  .topbar { position: relative; flex-wrap: wrap; gap: 10px 12px; padding: 10px 14px; }
   .subnav { top: 0; }
+  /* Row 1: brand (left) + hamburger (right). Row 2: full-width search.
+     The control cluster collapses into a dropdown the hamburger toggles. */
+  .brand { order: 1; }
+  .hamburger { display: inline-flex; order: 2; margin-left: auto; }
+  .topctl {
+    order: 3; margin-left: 0;
+    position: absolute; top: calc(100% + 6px); right: 0;
+    display: none; flex-direction: column; align-items: flex-start; gap: 12px;
+    min-width: 180px; padding: 14px;
+    background: var(--panel-2); border: 1px solid var(--line-2);
+    border-radius: var(--r-sm); box-shadow: var(--shadow); z-index: 60;
+  }
+  .topctl.open { display: flex; }
+  .search-wrap { order: 4; flex-basis: 100%; width: 100%; }
 }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } html { scroll-behavior: auto; } }
 
@@ -491,57 +516,3 @@ a:hover { text-decoration: underline; }
 /* obs-kind tags on enhanced song rows */
 .tag.exact { color: var(--green); border-color: rgba(95,209,122,.4); }
 .tag.coarse { color: var(--muted); border-color: var(--line-2); }
-
-/* ---------- upload full official data ---------- */
-.upload-box {
-  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r);
-  padding: 18px 20px; box-shadow: var(--shadow);
-}
-.upload-steps { margin: 0; padding-left: 22px; display: grid; gap: 16px; }
-.upload-steps > li { padding-left: 4px; }
-.upload-steps .ust { font-weight: 650; font-size: 14.5px; margin-bottom: 4px; }
-.upload-steps .usb { color: var(--muted); font-size: 13px; line-height: 1.6; }
-.bm-wrap { margin-top: 10px; }
-.bm-link {
-  display: inline-block; font-family: var(--mono); font-size: 13px; font-weight: 700;
-  letter-spacing: .04em; color: #0b0f1a !important; cursor: grab;
-  background: linear-gradient(120deg, var(--brass), var(--brass-d));
-  border: 1px solid var(--brass-d); border-radius: var(--r-sm); padding: 9px 16px;
-  text-decoration: none !important; user-select: none;
-}
-.bm-link:active { cursor: grabbing; }
-.bm-link:hover { box-shadow: 0 0 0 3px rgba(255,176,46,.2); }
-.file-row { margin-top: 10px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.file-row input[type=file] { color: var(--muted); font-size: 12.5px; max-width: 100%; }
-.ubtn {
-  font-family: var(--mono); font-size: 13px; letter-spacing: .04em; cursor: pointer;
-  background: var(--teal); color: #0b0f1a; border: none; border-radius: var(--r-sm);
-  padding: 8px 16px; font-weight: 700;
-}
-.ubtn:hover { filter: brightness(1.08); }
-.ubtn.danger { background: var(--coral); }
-.upload-result:empty { display: none; }
-.upload-result { margin-top: 14px; display: grid; gap: 6px; }
-.ures { font-size: 13px; line-height: 1.5; }
-.ures.ok { color: var(--green); }
-.ures.warn { color: var(--brass); }
-.ures.err { color: var(--coral); }
-.ures.token { color: var(--muted); font-size: 12px; word-break: break-all; }
-.ures.token code {
-  font-family: var(--mono); color: var(--ink); background: var(--bg-grid);
-  border: 1px solid var(--line-2); border-radius: 4px; padding: 1px 6px; margin-left: 4px;
-}
-.upload-privacy {
-  margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line);
-  color: var(--dim); font-size: 11.5px; line-height: 1.6;
-}
-.manage-box {
-  margin-top: 16px; background: var(--panel-2); border: 1px solid var(--line-2);
-  border-radius: var(--r); padding: 15px 18px;
-}
-.manage-box .mb-h { font-family: var(--mono); font-size: 12px; letter-spacing: .08em;
-  color: var(--muted); margin-bottom: 10px; }
-.manage-box .mb-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
-  font-size: 13px; }
-.manage-box .mb-row span { flex: 1; min-width: 140px; }
-.manage-box .mb-note { color: var(--dim); font-size: 12px; margin-top: 8px; line-height: 1.5; }
