@@ -68,6 +68,49 @@ def chart_part(rec, instrument):
     return rec.get("part") or DEFAULT_PART.get(instrument, "G")
 
 
+def build_name_canon(name_dp_counts):
+    """Merge chart names where an upstream encoding loss replaced a non-ASCII glyph
+    with a literal '?' — gsv.fun returns e.g. 'チョンマゲ航空①便' also as 'チョンマゲ航空?便'
+    and '…キッス♡…' as '…キッス?…'. Because charts are keyed by exact name, the two
+    spellings otherwise split one chart into two.
+
+    `name_dp_counts` maps (name, diff, part) -> occurrence count. Returns a remap
+    {(name, diff, part): canonical_name} for every '?'-bearing name that has a
+    sibling of the SAME (diff, part) and length, identical except a non-ASCII
+    character fills each '?' position. Titles with a legitimate literal '?' (no
+    such sibling — e.g. '誰?', "What's up?") are absent from the remap and left
+    unchanged. Ambiguous matches resolve to the most common spelling, deterministically."""
+    by_dp = {}
+    for (name, diff, part) in name_dp_counts:
+        by_dp.setdefault((diff, part), []).append(name)
+
+    remap = {}
+    for (name, diff, part) in name_dp_counts:
+        if "?" not in name:
+            continue
+        sibs = []
+        for cand in by_dp.get((diff, part), ()):
+            if cand == name or "?" in cand or len(cand) != len(name):
+                continue
+            ok = True
+            for a, b in zip(name, cand):
+                if a == "?":
+                    if ord(b) <= 0x7f:          # the '?' must hide a non-ASCII glyph
+                        ok = False
+                        break
+                elif a != b:
+                    ok = False
+                    break
+            if ok:
+                sibs.append(cand)
+        if not sibs:
+            continue                            # genuine literal '?': leave as-is
+        # most common spelling wins; name as a stable tiebreaker
+        remap[(name, diff, part)] = max(
+            sibs, key=lambda s: (name_dp_counts.get((s, diff, part), 0), s))
+    return remap
+
+
 def load_players(version, instrument="drum"):
     path = os.path.join(RAW_DIR, f"players_{instrument}_{version}.jsonl")
     players = []
@@ -91,17 +134,34 @@ def build(version="galaxywave_delta", instrument="drum", min_support=5, svd_dim=
     P = len(players)
     print(f"[build] instrument={instrument} players: {P}")
 
+    # ---- chart-name cleanup: merge upstream encoding-loss '?' variants ----
+    name_dp_counts = {}
+    for p in players:
+        for pool in ("hot", "other"):
+            for r in (p.get(pool, {}).get("data") or []):
+                key = (r["name"], r["diff"], chart_part(r, instrument))
+                name_dp_counts[key] = name_dp_counts.get(key, 0) + 1
+    name_remap = build_name_canon(name_dp_counts)
+    if name_remap:
+        print(f"[build] name cleanup: merged {len(name_remap)} encoding-loss chart name(s)")
+        for (nm, diff, part), canon in sorted(name_remap.items()):
+            print(f"        '{nm}' ({diff}/{part}) -> '{canon}'")
+
+    def canon_name(name, diff, part):
+        return name_remap.get((name, diff, part), name)
+
     # ---- pass 1: gather charts + per-chart raw stats ----
     chart_meta = {}  # key -> dict
     for p in players:
         for pool in ("hot", "other"):
             for r in (p.get(pool, {}).get("data") or []):
                 part = chart_part(r, instrument)
-                k = chart_key(r["name"], r["diff"], part)
+                nm = canon_name(r["name"], r["diff"], part)
+                k = chart_key(nm, r["diff"], part)
                 m = chart_meta.get(k)
                 if m is None:
                     m = {
-                        "name": r["name"], "diff": r["diff"], "part": part,
+                        "name": nm, "diff": r["diff"], "part": part,
                         "levels": [], "skills": [], "achs": [],
                         "pool_hot": 0, "pool_other": 0,
                     }
@@ -160,7 +220,7 @@ def build(version="galaxywave_delta", instrument="drum", min_support=5, svd_dim=
         for pool in ("hot", "other"):
             for r in (p.get(pool, {}).get("data") or []):
                 part = chart_part(r, instrument)
-                ci = chart_index[chart_key(r["name"], r["diff"], part)]
+                ci = chart_index[chart_key(canon_name(r["name"], r["diff"], part), r["diff"], part)]
                 sv = float(r.get("skill_value") or 0.0)
                 skill_mat[pi, ci] = sv
                 presence[pi, ci] = 1
